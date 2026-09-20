@@ -23,20 +23,25 @@ enum class ThemeMode(val displayName: String) {
     DARK("夜间"),
 }
 
+/**
+ * 一个动作可绑多个手势（如「下一首」同时接受双击和两指双击），
+ * 但一个手势只能属于一个动作——否则一次手势会触发两个动作。
+ * 这条反向约束由 [gestureToAction] 的读取口径和 [ConfigStore.addBinding] 的抢占共同保证。
+ */
 data class NudgeConfig(
-    val bindings: Map<ActionType, Gesture>,
+    val bindings: Map<ActionType, Set<Gesture>>,
     val sensitivity: Sensitivity,
     val themeMode: ThemeMode,
 ) {
     /** 反查：某手势绑定到了哪个动作。未绑定返回 null。 */
     fun gestureToAction(gesture: Gesture): ActionType? =
-        bindings.entries.firstOrNull { it.value == gesture }?.key
+        bindings.entries.firstOrNull { gesture in it.value }?.key
 
     companion object {
         val DEFAULT = NudgeConfig(
             bindings = mapOf(
-                ActionType.NEXT_TRACK to Gesture.TWO_FINGER_DOUBLE_TAP,
-                ActionType.LIKE to Gesture.THREE_FINGER_DOUBLE_TAP,
+                ActionType.NEXT_TRACK to setOf(Gesture.TWO_FINGER_DOUBLE_TAP),
+                ActionType.LIKE to setOf(Gesture.THREE_FINGER_DOUBLE_TAP),
             ),
             sensitivity = Sensitivity.STANDARD,
             themeMode = ThemeMode.SYSTEM,
@@ -44,19 +49,32 @@ data class NudgeConfig(
     }
 }
 
+/**
+ * 绑定的持久化格式：逗号分隔的枚举名。
+ *
+ * 刻意沿用 [stringPreferencesKey] 而不换成 stringSetPreferencesKey——同名 key 换类型
+ * 是不兼容变更。逗号格式让旧数据（单个枚举名）天然解析成单元素集合，无需迁移代码。
+ */
+internal fun encodeGestures(gestures: Set<Gesture>): String = gestures.joinToString(",") { it.name }
+
+/** 未知名字直接丢弃，这样枚举重命名后读旧数据不会崩。 */
+internal fun decodeGestures(stored: String): Set<Gesture> =
+    stored.split(",")
+        .mapNotNull { name -> Gesture.entries.firstOrNull { it.name == name.trim() } }
+        .toSet()
+
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "nudge_config")
 
 class ConfigStore(private val context: Context) {
 
     val config: Flow<NudgeConfig> = context.dataStore.data.map { prefs ->
         NudgeConfig(
-            bindings = ActionType.entries.mapNotNull { action ->
-                val stored = prefs[bindingKey(action)]
-                val gesture = stored?.let { name ->
-                    Gesture.entries.firstOrNull { it.name == name }
-                } ?: NudgeConfig.DEFAULT.bindings[action]
-                gesture?.let { action to it }
-            }.toMap(),
+            bindings = ActionType.entries.associateWith { action ->
+                // 没写过 key 才回落到默认；写过空串表示用户主动清空，要保持空集
+                prefs[bindingKey(action)]
+                    ?.let { decodeGestures(it) }
+                    ?: NudgeConfig.DEFAULT.bindings[action].orEmpty()
+            },
             sensitivity = prefs[SENSITIVITY_KEY]
                 ?.let { name -> Sensitivity.entries.firstOrNull { it.name == name } }
                 ?: NudgeConfig.DEFAULT.sensitivity,
@@ -66,15 +84,24 @@ class ConfigStore(private val context: Context) {
         )
     }
 
-    /** 绑定手势到动作。同一手势不能同时绑定两个动作，故先解除它在别处的占用。 */
-    suspend fun setBinding(action: ActionType, gesture: Gesture) {
+    /** 给动作加一个手势。同一手势不能同时绑定两个动作，故先解除它在别处的占用。 */
+    suspend fun addBinding(action: ActionType, gesture: Gesture) {
         context.dataStore.edit { prefs ->
             ActionType.entries.forEach { other ->
-                if (other != action && prefs[bindingKey(other)] == gesture.name) {
-                    prefs.remove(bindingKey(other))
+                if (other == action) return@forEach
+                val current = prefs.gesturesOf(other)
+                if (gesture in current) {
+                    prefs[bindingKey(other)] = encodeGestures(current - gesture)
                 }
             }
-            prefs[bindingKey(action)] = gesture.name
+            prefs[bindingKey(action)] = encodeGestures(prefs.gesturesOf(action) + gesture)
+        }
+    }
+
+    /** 解除动作的一个手势。允许清空到空集——此时该动作无法触发，由 UI 明示「未绑定」。 */
+    suspend fun removeBinding(action: ActionType, gesture: Gesture) {
+        context.dataStore.edit { prefs ->
+            prefs[bindingKey(action)] = encodeGestures(prefs.gesturesOf(action) - gesture)
         }
     }
 
@@ -90,5 +117,11 @@ class ConfigStore(private val context: Context) {
         val SENSITIVITY_KEY = stringPreferencesKey("sensitivity")
         val THEME_KEY = stringPreferencesKey("theme_mode")
         fun bindingKey(action: ActionType) = stringPreferencesKey("binding_${action.name}")
+
+        /** 写入侧必须和读取侧用同一套回落规则，否则改 A 会把未写过的 B 悄悄重置成空。 */
+        fun Preferences.gesturesOf(action: ActionType): Set<Gesture> =
+            this[bindingKey(action)]
+                ?.let { decodeGestures(it) }
+                ?: NudgeConfig.DEFAULT.bindings[action].orEmpty()
     }
 }

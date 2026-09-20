@@ -83,8 +83,11 @@ class MainActivity : ComponentActivity() {
                         SettingsScreen(
                             config = config,
                             hasPermission = hasPermission,
-                            onBindingChange = { action, gesture ->
-                                scope.launch { configStore.setBinding(action, gesture) }
+                            onBindingAdd = { action, gesture ->
+                                scope.launch { configStore.addBinding(action, gesture) }
+                            },
+                            onBindingRemove = { action, gesture ->
+                                scope.launch { configStore.removeBinding(action, gesture) }
                             },
                             onSensitivityChange = {
                                 scope.launch { configStore.setSensitivity(it) }

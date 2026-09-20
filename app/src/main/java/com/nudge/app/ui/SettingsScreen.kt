@@ -14,6 +14,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -36,7 +37,8 @@ import com.nudge.app.gesture.Sensitivity
 fun SettingsScreen(
     config: NudgeConfig,
     hasPermission: Boolean,
-    onBindingChange: (ActionType, Gesture) -> Unit,
+    onBindingAdd: (ActionType, Gesture) -> Unit,
+    onBindingRemove: (ActionType, Gesture) -> Unit,
     onSensitivityChange: (Sensitivity) -> Unit,
     onThemeChange: (ThemeMode) -> Unit,
     onRequestPermission: () -> Unit,
@@ -90,18 +92,27 @@ fun SettingsScreen(
             }
         }
 
-        // 每个动作绑定一个手势，手势互斥由 ConfigStore.setBinding 保证
+        // 一个动作可绑多个手势（多选），反向的互斥——一个手势只属于一个动作——
+        // 由 ConfigStore.addBinding 的抢占保证，勾给新动作时会从原动作自动移除。
         ActionType.entries.forEach { action ->
-            SectionTitle("${action.displayName} 的手势")
+            val bound = config.bindings[action].orEmpty()
+            SectionTitle(
+                if (bound.isEmpty()) "${action.displayName} 的手势（未绑定）"
+                else "${action.displayName} 的手势"
+            )
             Gesture.entries.forEach { gesture ->
                 val occupiedBy = config.gestureToAction(gesture)
-                val selected = config.bindings[action] == gesture
+                val selected = gesture in bound
                 val occupiedByOther = occupiedBy != null && occupiedBy != action
                 OptionRow(
                     label = gesture.displayName,
                     hint = if (occupiedByOther) "已绑定「${occupiedBy?.displayName}」" else null,
                     selected = selected,
-                    onClick = { onBindingChange(action, gesture) },
+                    multiSelect = true,
+                    onClick = {
+                        if (selected) onBindingRemove(action, gesture)
+                        else onBindingAdd(action, gesture)
+                    },
                 )
             }
         }
@@ -153,6 +164,7 @@ private fun OptionRow(
     hint: String?,
     selected: Boolean,
     onClick: () -> Unit,
+    multiSelect: Boolean = false,
 ) {
     Row(
         modifier = Modifier
@@ -164,7 +176,11 @@ private fun OptionRow(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        RadioButton(selected = selected, onClick = onClick)
+        if (multiSelect) {
+            Checkbox(checked = selected, onCheckedChange = { onClick() })
+        } else {
+            RadioButton(selected = selected, onClick = onClick)
+        }
         Column {
             Text(
                 text = label,
