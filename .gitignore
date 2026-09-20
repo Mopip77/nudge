@@ -9,6 +9,10 @@ local.properties
 *.dex
 captures/
 
+# 签名密钥，绝不能提交
+*.jks
+*.keystore
+
 # IDE
 .idea/
 *.iml

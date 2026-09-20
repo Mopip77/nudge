@@ -3,6 +3,14 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+// CI 打 tag 时通过环境变量注入版本号，本地构建回落到默认值
+val appVersionName = System.getenv("VERSION_NAME") ?: "1.0"
+val appVersionCode = System.getenv("VERSION_CODE")?.toIntOrNull() ?: 1
+
+// keystore 只在 CI 上通过环境变量提供，本地缺失时 release 包保持 unsigned
+val keystoreFile = System.getenv("KEYSTORE_FILE")?.takeIf { it.isNotBlank() }?.let { file(it) }
+val hasKeystore = keystoreFile?.exists() == true
+
 android {
     namespace = "com.nudge.app"
     compileSdk = 34
@@ -11,13 +19,27 @@ android {
         applicationId = "com.nudge.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = appVersionCode
+        versionName = appVersionName
+    }
+
+    if (hasKeystore) {
+        signingConfigs {
+            create("release") {
+                storeFile = keystoreFile
+                storePassword = System.getenv("KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("KEY_ALIAS")
+                keyPassword = System.getenv("KEY_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            if (hasKeystore) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
     compileOptions {
