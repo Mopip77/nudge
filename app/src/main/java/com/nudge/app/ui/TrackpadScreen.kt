@@ -1,19 +1,25 @@
 package com.nudge.app.ui
 
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredWidth
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Favorite
@@ -22,6 +28,7 @@ import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -36,6 +43,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -45,14 +53,16 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import android.graphics.Bitmap
 import android.os.SystemClock
 import android.view.MotionEvent
-import com.nudge.app.config.ActionType
 import com.nudge.app.config.NudgeConfig
 import com.nudge.app.gesture.Gesture
 import com.nudge.app.gesture.GestureRecognizer
@@ -132,8 +142,6 @@ fun TrackpadScreen(
                 )
             }
         }
-
-        BindingHint(config = config)
     }
 }
 
@@ -179,22 +187,18 @@ private fun TopBar(track: TrackInfo?, onOpenSettings: () -> Unit) {
                         .weight(1f)
                         .padding(start = 14.dp)
                 ) {
-                    Text(
+                    MarqueeText(
                         text = track?.title ?: "未检测到播放",
                         fontSize = 18.sp,
                         fontWeight = FontWeight.Medium,
                         color = MaterialTheme.colorScheme.onBackground,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
                     )
                     if (track != null && track.artist.isNotEmpty()) {
-                        Text(
+                        MarqueeText(
                             // 网易云用 "/" 分隔多位歌手，换成中点更像常规排版
                             text = track.artist.replace("/", " · "),
                             fontSize = 13.sp,
                             color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
                         )
                     }
                 }
@@ -224,6 +228,82 @@ private fun TopBar(track: TrackInfo?, onOpenSettings: () -> Unit) {
                     modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 12.dp),
                 )
             }
+        }
+    }
+}
+
+/** 跑马灯每秒滚过的距离。慢到能读清，又不至于长标题绕一圈要等太久。 */
+private val MARQUEE_SPEED_PER_SEC = 30.dp
+/** 两遍文本之间的空隙，避免首尾相接看不出断点。 */
+private val MARQUEE_GAP = 48.dp
+/** 开始滚动前的停顿，让用户先看清开头。整圈滚完回到原点后同样停顿。 */
+private const val MARQUEE_DELAY_MS = 1500L
+
+/**
+ * 超长时循环滚动的单行文本，不超长则静态居左显示。
+ *
+ * 没用 Compose 自带的 `basicMarquee`：它要求较新的 foundation 版本且早期为实验 API，
+ * 这里自己滚更可控（停顿时长、间隙宽度）。
+ *
+ * 滚动方式是"跑两遍 + 中间留空隙"的无缝循环：画两份文本，位移走完
+ * 「一份宽度 + 间隙」后瞬间归零，视觉上等价于首尾相接地无限滚动。
+ */
+@Composable
+private fun MarqueeText(
+    text: String,
+    fontSize: androidx.compose.ui.unit.TextUnit,
+    color: Color,
+    fontWeight: FontWeight? = null,
+) {
+    val style = LocalTextStyle.current.merge(
+        TextStyle(fontSize = fontSize, fontWeight = fontWeight, color = color)
+    )
+    val measurer = rememberTextMeasurer()
+    val density = LocalDensity.current
+
+    // clipToBounds 必须加在容器上而非内部滚动的 Row 上：Row 自身宽度是两份文本，
+    // 裁到它的边界等于没裁，滚出去的字会画到相邻控件（收藏图标、设置按钮）上。
+    BoxWithConstraints(
+        modifier = Modifier.fillMaxWidth().clipToBounds(),
+        // 必须显式左对齐：Row 用 requiredWidth 超出了容器，默认居中会让它往左溢出半截
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        val containerWidthPx = with(density) { maxWidth.toPx() }
+        // 无约束测量，拿到文本的真实宽度；直接用 Text 的 onTextLayout 只能拿到被截断后的宽度
+        val textWidthPx = remember(text, style, measurer) {
+            measurer.measure(text = text, style = style, maxLines = 1).size.width.toFloat()
+        }
+        val overflowing = textWidthPx > containerWidthPx
+
+        if (!overflowing) {
+            Text(text = text, style = style, maxLines = 1, overflow = TextOverflow.Clip)
+            return@BoxWithConstraints
+        }
+
+        val gapPx = with(density) { MARQUEE_GAP.toPx() }
+        val cyclePx = textWidthPx + gapPx
+        val offsetX = remember(text) { Animatable(0f) }
+
+        LaunchedEffect(text, cyclePx) {
+            val speedPxPerSec = with(density) { MARQUEE_SPEED_PER_SEC.toPx() }
+            val durationMs = (cyclePx / speedPxPerSec * 1000f).toInt().coerceAtLeast(1)
+            while (true) {
+                delay(MARQUEE_DELAY_MS)
+                offsetX.animateTo(-cyclePx, tween(durationMs, easing = LinearEasing))
+                offsetX.snapTo(0f)
+            }
+        }
+
+        Row(
+            modifier = Modifier
+                .offset { IntOffset(offsetX.value.toInt(), 0) }
+                // requiredWidth 而非 width：后者会被父级约束夹回容器宽度，
+                // 两份文本挤不下，第二份就没了。
+                .requiredWidth(with(density) { (cyclePx * 2).toDp() })
+        ) {
+            Text(text = text, style = style, maxLines = 1, softWrap = false)
+            Spacer(modifier = Modifier.width(MARQUEE_GAP))
+            Text(text = text, style = style, maxLines = 1, softWrap = false)
         }
     }
 }
@@ -313,28 +393,6 @@ private fun ProgressRow(track: TrackInfo, modifier: Modifier = Modifier) {
                 fontSize = 11.sp,
                 color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.45f),
             )
-        }
-    }
-}
-
-@Composable
-private fun BindingHint(config: NudgeConfig) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(bottom = 24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        ActionType.entries.forEach { action ->
-            val gesture = config.bindings[action]
-            if (gesture != null) {
-                Text(
-                    text = "${gesture.displayName} → ${action.displayName}",
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.45f),
-                )
-            }
         }
     }
 }
