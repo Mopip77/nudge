@@ -227,6 +227,42 @@ class GestureRecognizerTest {
         assertNull(r.onTouchEvent(TouchEvent(TouchEventType.UP, 2, 400f, 300f, 750, 2)))
     }
 
+    /**
+     * 冷却期跨批次生效是有意设计，不是疏漏。
+     *
+     * 全部手指离屏后重新放上再点，仍受 300ms 冷却期约束——因为冷却期防的就是
+     * 连击误触发，而「快速抬手重来」同样属于连击场景，300ms 内触发两次动作
+     * 大概率是抖动而非本意。
+     */
+    @Test
+    fun `冷却期跨批次生效_全部抬起重来仍受抑制`() {
+        val r = recognizer()
+        // 第一次：两指底座 + 单击，正常触发
+        r.onTouchEvent(TouchEvent(TouchEventType.DOWN, 0, 100f, 100f, 0, 1))
+        r.onTouchEvent(TouchEvent(TouchEventType.DOWN, 1, 150f, 100f, 10, 2))
+        r.onTouchEvent(TouchEvent(TouchEventType.DOWN, 2, 400f, 300f, 200, 3))
+        assertEquals(
+            Gesture.TWO_FINGER_HOLD_TAP,
+            r.onTouchEvent(TouchEvent(TouchEventType.UP, 2, 400f, 300f, 250, 2))
+        )
+        // 全部手指抬起，本批结束
+        r.onTouchEvent(TouchEvent(TouchEventType.UP, 0, 100f, 100f, 260, 1))
+        r.onTouchEvent(TouchEvent(TouchEventType.UP, 1, 150f, 100f, 270, 0))
+
+        // 重新放上两指再点，但距上次触发仅 200ms（450-250），仍在冷却期内
+        r.onTouchEvent(TouchEvent(TouchEventType.DOWN, 0, 100f, 100f, 280, 1))
+        r.onTouchEvent(TouchEvent(TouchEventType.DOWN, 1, 150f, 100f, 290, 2))
+        r.onTouchEvent(TouchEvent(TouchEventType.DOWN, 2, 400f, 300f, 420, 3))
+        assertNull(r.onTouchEvent(TouchEvent(TouchEventType.UP, 2, 400f, 300f, 450, 2)))
+
+        // 超过冷却期后（距上次触发 600-250=350ms > 300ms）恢复正常
+        r.onTouchEvent(TouchEvent(TouchEventType.DOWN, 2, 400f, 300f, 550, 3))
+        assertEquals(
+            Gesture.TWO_FINGER_HOLD_TAP,
+            r.onTouchEvent(TouchEvent(TouchEventType.UP, 2, 400f, 300f, 600, 2))
+        )
+    }
+
     @Test
     fun `长按的手指移动超容差则单击不触发`() {
         val r = recognizer()
