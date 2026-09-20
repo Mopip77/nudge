@@ -3,9 +3,9 @@ package com.nudge.app.media
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.media.AudioManager
 import android.media.MediaMetadata
-import android.media.Rating
 import android.media.session.MediaController
 import android.media.session.MediaSessionManager
 import android.media.session.PlaybackState
@@ -56,10 +56,38 @@ class MediaControlRepository(private val context: Context) {
     fun currentTrack(): TrackInfo? {
         val controller = skipTargetController() ?: return null
         val md = controller.metadata ?: return null
-        val title = md.getString(MediaMetadata.METADATA_KEY_TITLE) ?: return null
-        val artist = md.getString(MediaMetadata.METADATA_KEY_ARTIST).orEmpty()
-        return TrackInfo(title = title, artist = artist, isLiked = readIsLiked(controller))
+        val title = md.getString(MediaMetadata.METADATA_KEY_TITLE)
+            ?: md.getString(MediaMetadata.METADATA_KEY_DISPLAY_TITLE)
+            ?: return null
+        val artist = md.getString(MediaMetadata.METADATA_KEY_ARTIST)
+            ?: md.getString(MediaMetadata.METADATA_KEY_DISPLAY_SUBTITLE).orEmpty()
+        val state = controller.playbackState
+
+        return TrackInfo(
+            title = title,
+            artist = artist,
+            isLiked = readIsLiked(controller),
+            album = md.getString(MediaMetadata.METADATA_KEY_ALBUM).orEmpty(),
+            artwork = readArtwork(md),
+            durationMs = md.getLong(MediaMetadata.METADATA_KEY_DURATION),
+            positionMs = state?.position ?: 0,
+            positionUpdateTimeMs = state?.lastPositionUpdateTime ?: 0,
+            // 部分播放器暂停时上报 speed=0，这里只在播放中取用，避免进度推算被清零
+            playbackSpeed = state?.playbackSpeed?.takeIf { it > 0f } ?: 1f,
+            isPlaying = state?.state == PlaybackState.STATE_PLAYING,
+            mediaId = md.getString(MediaMetadata.METADATA_KEY_MEDIA_ID).orEmpty(),
+        )
     }
+
+    /**
+     * 读取封面。网易云三个 key 指向同一张图，按优先级取第一个非空的。
+     *
+     * 位图较大（实测 363x363 ARGB_8888 约 515KB），调用方只读不改，不要回写。
+     */
+    private fun readArtwork(md: MediaMetadata): Bitmap? =
+        ARTWORK_KEYS.firstNotNullOfOrNull { key ->
+            runCatching { md.getBitmap(key) }.getOrNull()
+        }
 
     private fun readIsLiked(controller: MediaController): Boolean =
         controller.metadata
@@ -95,22 +123,20 @@ class MediaControlRepository(private val context: Context) {
     /**
      * 收藏当前歌曲，语义为「只点亮，永不取消」。
      *
-     * 网易云的 setRating 实测为 toggle（忽略传入的布尔值，只当切换信号），
+     * 网易云的收藏入口实测为 toggle（只当切换信号，不接受目标状态），
      * 因此必须先读 USER_RATING 判断当前状态，已收藏时不做任何操作。
      * 否则盲操下会静默取消用户已有的收藏。
+     *
+     * 注意 USER_RATING 对未收藏的歌也报 isRated=true，只有 hasHeart 有区分度。
      */
     fun like(): ActionResult {
         val controller = neteaseController() ?: return ActionResult.NoSession
 
         if (readIsLiked(controller)) return ActionResult.AlreadyLiked
 
-        val actions = controller.playbackState?.actions ?: 0L
-        if (actions and PlaybackState.ACTION_SET_RATING != 0L) {
-            controller.transportControls.setRating(Rating.newHeartRating(true))
-            return ActionResult.Liked
-        }
-
-        // 兜底：动态查找 like custom action，不硬编码 id 以适应网易云改版
+        // 真机实测网易云的 actions 位掩码不含 ACTION_SET_RATING（822 =
+        // PAUSE|PLAY|SKIP_TO_PREVIOUS|SKIP_TO_NEXT|SEEK_TO|PLAY_PAUSE），
+        // 收藏只能走 custom action。动态查找而非硬编码 id，以适应改版。
         val likeAction = controller.playbackState?.customActions?.firstOrNull {
             it.action.contains("STAR", ignoreCase = true) ||
                 it.name.toString().contains("like", ignoreCase = true)
@@ -125,6 +151,13 @@ class MediaControlRepository(private val context: Context) {
 
     companion object {
         const val NETEASE_PACKAGE = "com.netease.cloudmusic"
+
+        /** 封面 key 的优先级。网易云三者指向同一张图，其他播放器未必都给。 */
+        private val ARTWORK_KEYS = listOf(
+            MediaMetadata.METADATA_KEY_ALBUM_ART,
+            MediaMetadata.METADATA_KEY_ART,
+            MediaMetadata.METADATA_KEY_DISPLAY_ICON,
+        )
 
         fun openNotificationSettings(context: Context) {
             context.startActivity(
