@@ -123,7 +123,7 @@ class GestureRecognizerTest {
     fun `宽松档允许更长的双击间隔`() {
         val r = recognizer(Sensitivity.LOOSE)
         assertNull(r.tap(1, startTime = 0))
-        // 450ms 间隔在宽松档(500ms)内，在标准档(350ms)外
+        // gap = 450-60 = 390ms，在宽松档(500ms)内，在标准档(350ms)外
         assertEquals(Gesture.DOUBLE_TAP, r.tap(1, startTime = 450))
     }
 
