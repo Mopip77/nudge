@@ -167,13 +167,16 @@ class GestureRecognizer(
     }
 
     /**
-     * 判断「长按底座」是否已就绪：当前按住的手指中，
-     * 除本次抬起的这根以外，都已按住超过长按阈值。
+     * 判断「长按底座」是否已就位：当前按住的手指中，除本次抬起的这根以外，
+     * 都已按下超过 [GestureParams.holdBaseReadyMs]。
+     *
+     * 注意这里判断的是「就位」而非「长按」——底座手指只需处于按下状态达到这个
+     * 较短的去抖阈值即可接受后续单击，不要求像 [params.longPressMs] 那样长时间按住。
      */
     private fun isHoldBaseReady(nowMs: Long, excludingPointerId: Int? = null): Boolean {
         val base = downTimes.filterKeys { it != excludingPointerId }
         if (base.size !in 2..3) return false
-        return base.values.all { nowMs - it >= params.longPressMs }
+        return base.values.all { nowMs - it >= params.holdBaseReadyMs }
     }
 
     /** 尝试把本次抬起识别为「长按 + 单击」。 */

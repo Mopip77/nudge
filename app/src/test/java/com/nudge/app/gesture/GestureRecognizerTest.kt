@@ -185,10 +185,10 @@ class GestureRecognizerTest {
     }
 
     @Test
-    fun `长按时长不足则单击不触发`() {
+    fun `底座刚按下就立刻点击未达就位阈值则不触发`() {
         val r = recognizer()
-        // 第三指在 200ms 点击，未达 500ms 长按阈值
-        assertNull(r.holdAndTap(holdFingers = 2, holdStartMs = 0, tapAtMs = 200))
+        // 标准档 holdBaseReadyMs=120ms，底座 0ms 按下，第三指在 50ms 点击，未就位
+        assertNull(r.holdAndTap(holdFingers = 2, holdStartMs = 0, tapAtMs = 50))
     }
 
     @Test
@@ -249,14 +249,14 @@ class GestureRecognizerTest {
         val r = recognizer()
         r.onTouchEvent(TouchEvent(TouchEventType.DOWN, 0, 100f, 100f, 0, 1))
         r.onTouchEvent(TouchEvent(TouchEventType.DOWN, 1, 150f, 100f, 5, 2))
-        // 第三指点早了，底座才按 490ms 未达 500ms 阈值，这次不应触发
-        r.onTouchEvent(TouchEvent(TouchEventType.DOWN, 2, 400f, 300f, 490, 3))
-        assertNull(r.onTouchEvent(TouchEvent(TouchEventType.UP, 2, 400f, 300f, 495, 2)))
+        // 第三指点早了，底座才按 110ms 未达 120ms 就位阈值，这次不应触发
+        r.onTouchEvent(TouchEvent(TouchEventType.DOWN, 2, 400f, 300f, 110, 3))
+        assertNull(r.onTouchEvent(TouchEvent(TouchEventType.UP, 2, 400f, 300f, 115, 2)))
         // 手指未全部松开，再点一次。此时底座已充分就绪，应正常触发
-        r.onTouchEvent(TouchEvent(TouchEventType.DOWN, 2, 400f, 300f, 700, 3))
+        r.onTouchEvent(TouchEvent(TouchEventType.DOWN, 2, 400f, 300f, 300, 3))
         assertEquals(
             Gesture.TWO_FINGER_HOLD_TAP,
-            r.onTouchEvent(TouchEvent(TouchEventType.UP, 2, 400f, 300f, 750, 2))
+            r.onTouchEvent(TouchEvent(TouchEventType.UP, 2, 400f, 300f, 350, 2))
         )
     }
 
@@ -271,5 +271,42 @@ class GestureRecognizerTest {
         // 长按的两指抬起，不应再产生手势
         assertNull(r.onTouchEvent(TouchEvent(TouchEventType.UP, 0, 100f, 100f, 700, 1)))
         assertNull(r.onTouchEvent(TouchEvent(TouchEventType.UP, 1, 150f, 100f, 710, 0)))
+    }
+
+    @Test
+    fun `底座刚就位即可单击触发`() {
+        val r = recognizer()
+        // 标准档 holdBaseReadyMs=120ms，底座 0/10ms 按下，第三指在刚过 120ms 就位后点击
+        assertEquals(
+            Gesture.TWO_FINGER_HOLD_TAP,
+            r.holdAndTap(holdFingers = 2, holdStartMs = 0, tapAtMs = 130)
+        )
+    }
+
+    @Test
+    fun `三指同时双击不被误判为底座加单击`() {
+        val r = recognizer()
+        // 标准档 multiTouchSlop=100ms、holdBaseReadyMs=120ms。
+        // 三指按下间隔卡在同时性窗口边界（0/50/99ms，仍算“同时按下”），
+        // 若 holdBaseReadyMs < multiTouchSlopMs（比如误设为 80），最后落下的第三指
+        // 在其自身按下时刻（99ms）去看前两指（0ms/50ms 按下）会发现「已就位」
+        // （99-0=99>=80），从而在它随后抬起时被 tryHoldTap 误判为「两指底座+单击」，
+        // 而不是走三指双击的判定路径。当前实现 holdBaseReadyMs(120) >= slop(99) 时，
+        // 就位条件不成立，不会分裂出这个误判分支。
+        fun threeFingerTap(startTime: Long): Gesture? {
+            r.onTouchEvent(TouchEvent(TouchEventType.DOWN, 0, 100f, 100f, startTime, 1))
+            r.onTouchEvent(TouchEvent(TouchEventType.DOWN, 1, 150f, 100f, startTime + 50, 2))
+            r.onTouchEvent(TouchEvent(TouchEventType.DOWN, 2, 200f, 100f, startTime + 99, 3))
+            var result: Gesture? = null
+            r.onTouchEvent(TouchEvent(TouchEventType.UP, 2, 200f, 100f, startTime + 130, 2))
+                ?.let { result = it }
+            r.onTouchEvent(TouchEvent(TouchEventType.UP, 1, 150f, 100f, startTime + 140, 1))
+                ?.let { result = it }
+            r.onTouchEvent(TouchEvent(TouchEventType.UP, 0, 100f, 100f, startTime + 150, 0))
+                ?.let { result = it }
+            return result
+        }
+        assertNull(threeFingerTap(startTime = 0))
+        assertEquals(Gesture.THREE_FINGER_DOUBLE_TAP, threeFingerTap(startTime = 300))
     }
 }
