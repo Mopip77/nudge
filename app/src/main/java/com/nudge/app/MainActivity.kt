@@ -3,6 +3,7 @@ package com.nudge.app
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.LaunchedEffect
@@ -80,6 +81,11 @@ class MainActivity : ComponentActivity() {
             NudgeTheme(themeMode = config.themeMode) {
                 Surface {
                     if (showSettings) {
+                        // 全 app 只有一个 Activity，也没用 navigation，设置页是靠
+                        // showSettings 布尔量 if/else 切出来的——系统返回栈里始终只有
+                        // MainActivity 一项，没有「上一页」，返回键默认行为是 finish
+                        // 整个 Activity。必须自己接管，才能退回主界面而不是退出 app。
+                        BackHandler { showSettings = false }
                         SettingsScreen(
                             config = config,
                             hasPermission = hasPermission,
