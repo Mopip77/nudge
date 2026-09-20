@@ -1964,7 +1964,8 @@ fun SettingsScreen(
                 val occupiedByOther = occupiedBy != null && occupiedBy != action
                 OptionRow(
                     label = gesture.displayName,
-                    hint = if (occupiedByOther) "已绑定「${occupiedBy.displayName}」" else null,
+                    // occupiedBy 可空，Kotlin 的智能转换不会跨 occupiedByOther 传播
+                    hint = if (occupiedByOther) "已绑定「${occupiedBy?.displayName}」" else null,
                     selected = selected,
                     onClick = { onBindingChange(action, gesture) },
                 )
