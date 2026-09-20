@@ -4,6 +4,7 @@ import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -47,8 +48,12 @@ private const val LYRIC_TICK_MS = 100L
 /** 一行歌词占的高度，决定滚动步长。 */
 private val LINE_HEIGHT = 34.dp
 
-/** 当前行上下各显示几行。取 3 是因为再多也会滚出容器且更淡到看不见。 */
-private const val VISIBLE_NEIGHBORS = 3
+/**
+ * 窗口边界的兜底值，仅用于容器高度尚未测量出来的首帧。
+ * 真正的窗口大小按容器高度算（见 [LyricsOverlay]），写死常数会让歌词
+ * 填不满区域——这块区域能放约 20 行，固定取 3 会上下空出一大片。
+ */
+private const val FALLBACK_NEIGHBORS = 3
 
 /** 换行动画时长，"跟得上换行"与"看得出动效"的折中。 */
 private const val SCROLL_ANIM_MS = 350
@@ -88,25 +93,33 @@ fun LyricsOverlay(
     // 前奏期间 indexAt 返回 -1，此时把第一行当作"即将唱的行"对齐到中央
     val anchorIndex = if (currentIndex < 0) 0 else currentIndex
 
-    // 只渲染当前行附近的窗口，避免长歌词把上千个 Text 都组合出来。
-    // 窗口本身已随 anchorIndex 移动，所以列不需要再按绝对行号位移——
-    // 只需补上窗口在列表两端被截断时的缺口，否则当前行会偏离中央。
-    val windowStart = (anchorIndex - VISIBLE_NEIGHBORS).coerceAtLeast(0)
-    val windowEnd = (anchorIndex + VISIBLE_NEIGHBORS).coerceAtMost(lines.lastIndex)
-
-    val lineHeightPx = with(LocalDensity.current) { LINE_HEIGHT.toPx() }
-    // 开头几行时窗口上方不足 VISIBLE_NEIGHBORS 行，向下补相应高度，
-    // 使当前行始终落在容器垂直中央
-    val offsetY by animateFloatAsState(
-        targetValue = (anchorIndex - windowStart - VISIBLE_NEIGHBORS) * -lineHeightPx,
-        animationSpec = tween(SCROLL_ANIM_MS, easing = FastOutSlowInEasing),
-        label = "lyricScroll",
-    )
-
-    Box(
+    BoxWithConstraints(
         modifier = modifier.fillMaxSize().clipToBounds(),
         contentAlignment = Alignment.Center,
     ) {
+        // 窗口大小按容器实际高度算：能放几行就渲染几行，让歌词填满整块区域。
+        // 多渲一行做缓冲，避免滚动动画途中上下边缘出现空档。
+        val neighbors = if (maxHeight > 0.dp) {
+            (maxHeight / LINE_HEIGHT / 2).toInt() + 1
+        } else {
+            FALLBACK_NEIGHBORS
+        }
+
+        // 只渲染当前行附近的窗口，避免长歌词把上千个 Text 都组合出来。
+        // 窗口本身已随 anchorIndex 移动，所以列不需要再按绝对行号位移——
+        // 只需补上窗口在列表两端被截断时的缺口，否则当前行会偏离中央。
+        val windowStart = (anchorIndex - neighbors).coerceAtLeast(0)
+        val windowEnd = (anchorIndex + neighbors).coerceAtMost(lines.lastIndex)
+
+        val lineHeightPx = with(LocalDensity.current) { LINE_HEIGHT.toPx() }
+        // 开头几行时窗口上方不足 neighbors 行，向下补相应高度，
+        // 使当前行始终落在容器垂直中央
+        val offsetY by animateFloatAsState(
+            targetValue = (anchorIndex - windowStart - neighbors) * -lineHeightPx,
+            animationSpec = tween(SCROLL_ANIM_MS, easing = FastOutSlowInEasing),
+            label = "lyricScroll",
+        )
+
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             // graphicsLayer 的位移走绘制阶段，不触发重组
@@ -125,11 +138,10 @@ fun LyricsOverlay(
 
 @Composable
 private fun LyricRow(text: String, isCurrent: Boolean, distance: Int) {
-    val alpha = when {
-        isCurrent -> 0.85f
-        distance == 1 -> 0.35f
-        else -> 0.18f
-    }
+    // 随距离连续衰减而非分档：窗口现在有二十来行，只分"相邻/其余"两档
+    // 会让远处一大片亮度一样，失去向外淡出的层次。0.06 是下限，
+    // 再淡就完全看不见了，边缘行会显得凭空消失。
+    val alpha = if (isCurrent) 0.85f else (0.34f - (distance - 1) * 0.05f).coerceAtLeast(0.06f)
     val animatedAlpha by animateFloatAsState(
         targetValue = alpha,
         animationSpec = tween(SCROLL_ANIM_MS, easing = FastOutSlowInEasing),
