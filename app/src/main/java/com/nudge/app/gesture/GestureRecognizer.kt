@@ -28,12 +28,12 @@ class GestureRecognizer(
     /**
      * 上一批已完成的轻点，用于组成双击。
      *
-     * [lastTapStartMs] 记录的是上一次点击「批次开始」的时刻（即那次的 batchStartMs），
-     * 而不是抬起时刻——双击窗口判定的是两次点击起始时间的间隔，
-     * 这样才能与「按住太久也算超时」的直觉一致：批次起点越晚，说明用户等待/操作越久。
+     * [lastTapEndMs] 记录的是上一次点击「全部手指抬起」的时刻，
+     * 双击窗口从这一刻算到下一次按下——即「抬起→按下」的间隔，
+     * 而不是两次按下时刻之差，这样窗口大小才不受第一次按住时长的影响。
      */
     private var lastTapFingers = 0
-    private var lastTapStartMs = Long.MIN_VALUE
+    private var lastTapEndMs = Long.MIN_VALUE
 
     fun reset() {
         batchStartMs = 0L
@@ -42,7 +42,7 @@ class GestureRecognizer(
         batchInvalid = false
         downPositions.clear()
         lastTapFingers = 0
-        lastTapStartMs = Long.MIN_VALUE
+        lastTapEndMs = Long.MIN_VALUE
     }
 
     fun onTouchEvent(event: TouchEvent): Gesture? {
@@ -89,19 +89,19 @@ class GestureRecognizer(
 
         if (!valid) {
             lastTapFingers = 0
-            lastTapStartMs = Long.MIN_VALUE
+            lastTapEndMs = Long.MIN_VALUE
             return null
         }
 
-        val withinWindow = batchStartMs - lastTapStartMs <= params.doubleTapWindowMs
+        val withinWindow = batchStartMs - lastTapEndMs <= params.doubleTapWindowMs
         if (lastTapFingers == fingers && withinWindow) {
             lastTapFingers = 0
-            lastTapStartMs = Long.MIN_VALUE
+            lastTapEndMs = Long.MIN_VALUE
             return doubleTapFor(fingers)
         }
 
         lastTapFingers = fingers
-        lastTapStartMs = batchStartMs
+        lastTapEndMs = event.timeMs
         return null
     }
 

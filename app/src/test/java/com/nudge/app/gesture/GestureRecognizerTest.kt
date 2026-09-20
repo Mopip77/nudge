@@ -131,8 +131,8 @@ class GestureRecognizerTest {
     fun `严格档拒绝标准档能接受的间隔`() {
         val r = recognizer(Sensitivity.STRICT)
         assertNull(r.tap(1, startTime = 0))
-        // 300ms 间隔在标准档(350ms)内，在严格档(250ms)外
-        assertNull(r.tap(1, startTime = 300))
+        // 第一次tap在60ms抬起，gap = 400-60 = 340ms，在标准档(350ms)内、严格档(250ms)外
+        assertNull(r.tap(1, startTime = 400))
     }
 
     @Test
