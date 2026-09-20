@@ -27,6 +27,15 @@ class GestureRecognizer(
     private var batchPeakFingers = 0
     private var batchFirstDownMs = 0L
     private var batchInvalid = false
+
+    /**
+     * 本批中是否有任意手指移动超出容差。
+     *
+     * 与 [batchInvalid] 分开维护：[batchInvalid] 只表达「按下时序不干净」（同时性不满足、
+     * 或落下手指数超出底座上限），只应否决**双击**；而移动超容差无论落在哪种手势语义下
+     * 都应视为用户在滑动而非点击/长按，因此双击和长按+单击都要否决，用这个独立标志承载。
+     */
+    private var batchMoveInvalid = false
     private val downPositions = mutableMapOf<Int, Pair<Float, Float>>()
     private val downTimes = mutableMapOf<Int, Long>()
 
@@ -36,19 +45,29 @@ class GestureRecognizer(
      * [lastTapEndMs] 记录的是上一次点击「全部手指抬起」的时刻，
      * 双击窗口从这一刻算到下一次按下——即「抬起→按下」的间隔，
      * 而不是两次按下时刻之差，这样窗口大小才不受第一次按住时长的影响。
+     *
+     * 哨兵值分析：[lastTapEndMs] 初值/重置值是 `Long.MIN_VALUE`，判定用到的减法
+     * `batchStartMs - lastTapEndMs` 在 `batchStartMs` 为正数时确实会整数溢出成负数，
+     * 使 `withinWindow` 恒为 `true`——单看这一项，首次点击似乎会被误判为双击的第二次。
+     * 但触发双击还需要前置条件 `lastTapFingers == fingers`：[lastTapFingers] 的初值/
+     * 重置值是 `0`，而合法的 `fingers` 最小是 `1`（只有 `fingers in 1..3` 才会走到这个
+     * 分支），因此首次点击时该条件恒为 `false`，溢出的 `withinWindow` 不会被用到。
+     * 且这两个字段总是成对重置（见 [reset] 与 onUp 中的失败分支），这道闸门不会失效。
+     * 结论：此处溢出真实存在但无法被触发，是安全的；不同于 [lastHoldTapFireMs] 那种
+     * 没有额外闸门保护、必须修掉的情形，这里保留 `Long.MIN_VALUE` 不做改动。
      */
     private var lastTapFingers = 0
     private var lastTapEndMs = Long.MIN_VALUE
 
     /**
-     * 长按 + 单击已触发过的时间，用于冷却期判定。
+     * 长按 + 单击已触发过的时间，用于冷却期判定；`null` 表示本批（自上次 reset 以来）从未触发过。
      *
-     * 哨兵值不用 [Long.MIN_VALUE]：冷却判定要做 `event.timeMs - lastHoldTapFireMs`，
-     * 若哨兵是 Long.MIN_VALUE，任何非负的 event.timeMs 减去它都会发生 Long 溢出，
-     * 结果变成一个极大的负数，反而让「从未触发过」被误判为「仍在冷却期」。
-     * 除以 2 后即使再减去一个正的时间戳也不会溢出，且仍远小于任何真实时间戳。
+     * 用可空类型而非 `Long.MIN_VALUE` 之类的哨兵值，是因为冷却判定要做
+     * `event.timeMs - lastHoldTapFireMs` 减法：任何非负时间戳减 `Long.MIN_VALUE`
+     * 都会整数溢出成一个极大的负数，反而让「从未触发过」被误判为「仍在冷却期」。
+     * 可空类型把「从未触发」和「触发过」在类型层面分开，不再需要靠魔法数字规避溢出。
      */
-    private var lastHoldTapFireMs = Long.MIN_VALUE / 2
+    private var lastHoldTapFireMs: Long? = null
 
     /** 本批中是否已经触发过长按+单击，用于避免收尾时误判为双击。 */
     private var batchProducedHoldTap = false
@@ -58,12 +77,13 @@ class GestureRecognizer(
         batchPeakFingers = 0
         batchFirstDownMs = 0L
         batchInvalid = false
+        batchMoveInvalid = false
         batchProducedHoldTap = false
         downPositions.clear()
         downTimes.clear()
         lastTapFingers = 0
         lastTapEndMs = Long.MIN_VALUE
-        lastHoldTapFireMs = Long.MIN_VALUE / 2
+        lastHoldTapFireMs = null
     }
 
     fun onTouchEvent(event: TouchEvent): Gesture? {
@@ -81,11 +101,16 @@ class GestureRecognizer(
             batchFirstDownMs = event.timeMs
             batchPeakFingers = 0
             batchInvalid = false
+            batchMoveInvalid = false
             batchProducedHoldTap = false
         }
-        // 超出同时性窗口落下的手指，说明不是「同时按下」。
-        // 但如果已构成长按底座，额外落下的手指是单击而非同时按下，不应据此判无效。
-        if (event.timeMs - batchFirstDownMs > params.multiTouchSlopMs && !isHoldBaseReady(event.timeMs)) {
+        // 超出同时性窗口落下的手指，说明不是「同时按下」，据此否决双击。
+        // 注意：这不应连带否决「长按+单击」——底座先按住、另一指晚落下正是
+        // 长按+单击的正常形态，它的合法性由 tryHoldTap 内部基于抬起时刻
+        // 重新计算的 isHoldBaseReady(downAt, excludingPointerId) 判断，
+        // 不需要（也不能）用这里的「批次级」标志兜底，否则一次过早的单击
+        // 尝试会把 batchInvalid 永久置位，污染同一批次内后续本该合法的单击。
+        if (event.timeMs - batchFirstDownMs > params.multiTouchSlopMs) {
             batchInvalid = true
         }
         downPositions[event.pointerId] = event.x to event.y
@@ -99,6 +124,7 @@ class GestureRecognizer(
             abs(event.y - start.second) > moveTolerancePx
         ) {
             batchInvalid = true
+            batchMoveInvalid = true
         }
     }
 
@@ -152,7 +178,7 @@ class GestureRecognizer(
 
     /** 尝试把本次抬起识别为「长按 + 单击」。 */
     private fun tryHoldTap(event: TouchEvent): Gesture? {
-        if (batchInvalid) return null
+        if (batchMoveInvalid) return null
         val downAt = downTimes[event.pointerId] ?: return null
 
         // 这根手指本身必须是短促单击，而非长按底座的一部分
@@ -160,7 +186,7 @@ class GestureRecognizer(
         if (!isHoldBaseReady(downAt, excludingPointerId = event.pointerId)) return null
 
         // 冷却期抑制连击误触
-        if (event.timeMs - lastHoldTapFireMs < COOLDOWN_MS) return null
+        if (lastHoldTapFireMs?.let { event.timeMs - it < COOLDOWN_MS } == true) return null
 
         val baseFingers = downTimes.keys.count { it != event.pointerId }
         val gesture = when (baseFingers) {

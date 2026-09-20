@@ -245,6 +245,22 @@ class GestureRecognizerTest {
     }
 
     @Test
+    fun `过早的单击尝试不应污染后续合法单击`() {
+        val r = recognizer()
+        r.onTouchEvent(TouchEvent(TouchEventType.DOWN, 0, 100f, 100f, 0, 1))
+        r.onTouchEvent(TouchEvent(TouchEventType.DOWN, 1, 150f, 100f, 5, 2))
+        // 第三指点早了，底座才按 490ms 未达 500ms 阈值，这次不应触发
+        r.onTouchEvent(TouchEvent(TouchEventType.DOWN, 2, 400f, 300f, 490, 3))
+        assertNull(r.onTouchEvent(TouchEvent(TouchEventType.UP, 2, 400f, 300f, 495, 2)))
+        // 手指未全部松开，再点一次。此时底座已充分就绪，应正常触发
+        r.onTouchEvent(TouchEvent(TouchEventType.DOWN, 2, 400f, 300f, 700, 3))
+        assertEquals(
+            Gesture.TWO_FINGER_HOLD_TAP,
+            r.onTouchEvent(TouchEvent(TouchEventType.UP, 2, 400f, 300f, 750, 2))
+        )
+    }
+
+    @Test
     fun `长按加单击后所有手指抬起不产生双击误判`() {
         val r = recognizer()
         for (i in 0 until 2) {
