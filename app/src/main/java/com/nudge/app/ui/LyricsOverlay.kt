@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -24,6 +25,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import android.os.SystemClock
@@ -85,9 +87,18 @@ fun LyricsOverlay(
 
     // 前奏期间 indexAt 返回 -1，此时把第一行当作"即将唱的行"对齐到中央
     val anchorIndex = if (currentIndex < 0) 0 else currentIndex
+
+    // 只渲染当前行附近的窗口，避免长歌词把上千个 Text 都组合出来。
+    // 窗口本身已随 anchorIndex 移动，所以列不需要再按绝对行号位移——
+    // 只需补上窗口在列表两端被截断时的缺口，否则当前行会偏离中央。
+    val windowStart = (anchorIndex - VISIBLE_NEIGHBORS).coerceAtLeast(0)
+    val windowEnd = (anchorIndex + VISIBLE_NEIGHBORS).coerceAtMost(lines.lastIndex)
+
     val lineHeightPx = with(LocalDensity.current) { LINE_HEIGHT.toPx() }
+    // 开头几行时窗口上方不足 VISIBLE_NEIGHBORS 行，向下补相应高度，
+    // 使当前行始终落在容器垂直中央
     val offsetY by animateFloatAsState(
-        targetValue = -anchorIndex * lineHeightPx,
+        targetValue = (anchorIndex - windowStart - VISIBLE_NEIGHBORS) * -lineHeightPx,
         animationSpec = tween(SCROLL_ANIM_MS, easing = FastOutSlowInEasing),
         label = "lyricScroll",
     )
@@ -97,16 +108,16 @@ fun LyricsOverlay(
         contentAlignment = Alignment.Center,
     ) {
         Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
             // graphicsLayer 的位移走绘制阶段，不触发重组
             modifier = Modifier.fillMaxWidth().graphicsLayer { translationY = offsetY }
         ) {
-            lines.forEachIndexed { index, line ->
-                val distance = kotlin.math.abs(index - anchorIndex)
-                // 超出可见范围的行不画，避免长歌词把上千个 Text 都组合出来
-                if (distance > VISIBLE_NEIGHBORS) return@forEachIndexed
-
-                val isCurrent = index == currentIndex
-                LyricRow(text = line.text, isCurrent = isCurrent, distance = distance)
+            for (index in windowStart..windowEnd) {
+                LyricRow(
+                    text = lines[index].text,
+                    isCurrent = index == currentIndex,
+                    distance = kotlin.math.abs(index - anchorIndex),
+                )
             }
         }
     }
@@ -125,16 +136,24 @@ private fun LyricRow(text: String, isCurrent: Boolean, distance: Int) {
         label = "lyricAlpha",
     )
 
-    Text(
-        text = text,
-        textAlign = TextAlign.Center,
-        fontSize = if (isCurrent) 17.sp else 15.sp,
-        fontWeight = if (isCurrent) FontWeight.Medium else FontWeight.Normal,
-        color = MaterialTheme.colorScheme.onSurface,
-        maxLines = 2,
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 24.dp, vertical = 4.dp)
-            .graphicsLayer { this.alpha = animatedAlpha },
-    )
+    // 行高固定：滚动位移按 LINE_HEIGHT 的整数倍算，
+    // 若行高随文字换行而变，当前行就会逐渐偏离容器中央
+    Box(
+        modifier = Modifier.fillMaxWidth().height(LINE_HEIGHT),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = text,
+            textAlign = TextAlign.Center,
+            fontSize = if (isCurrent) 17.sp else 15.sp,
+            fontWeight = if (isCurrent) FontWeight.Medium else FontWeight.Normal,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp)
+                .graphicsLayer { this.alpha = animatedAlpha },
+        )
+    }
 }
