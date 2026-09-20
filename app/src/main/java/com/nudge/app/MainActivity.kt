@@ -17,6 +17,8 @@ import androidx.compose.ui.ExperimentalComposeUiApi
 import com.nudge.app.action.ActionDispatcher
 import com.nudge.app.config.ConfigStore
 import com.nudge.app.config.NudgeConfig
+import com.nudge.app.lyrics.LyricsRepository
+import com.nudge.app.lyrics.LyricsState
 import com.nudge.app.media.ActionResult
 import com.nudge.app.media.MediaControlRepository
 import com.nudge.app.media.TrackInfo
@@ -59,6 +61,7 @@ class MainActivity : ComponentActivity() {
             var showSettings by remember { mutableStateOf(false) }
             var track by remember { mutableStateOf<TrackInfo?>(null) }
             var hasPermission by remember { mutableStateOf(repository.hasNotificationAccess()) }
+            var lyricsState by remember { mutableStateOf<LyricsState>(LyricsState.Idle) }
 
             // 轮询播放状态。MediaController 回调需要绑定/解绑生命周期管理，
             // 而本应用是前台短时使用，1 秒轮询更简单且开销可忽略。
@@ -75,6 +78,18 @@ class MainActivity : ComponentActivity() {
                     hasPermission = permission
                     track = current
                     delay(1000)
+                }
+            }
+
+            // 歌曲变化时重新拉歌词。以 mediaId 为 key，切歌会自动取消上一次
+            // 未完成的请求，避免旧歌词错配到新歌上。
+            val mediaId = track?.mediaId
+            LaunchedEffect(mediaId) {
+                lyricsState = if (mediaId.isNullOrBlank()) {
+                    LyricsState.Idle
+                } else {
+                    LyricsState.Loading
+                    LyricsRepository.load(mediaId)
                 }
             }
 
@@ -111,6 +126,7 @@ class MainActivity : ComponentActivity() {
                             track = track,
                             config = config,
                             hasPermission = hasPermission,
+                            lyricsState = lyricsState,
                             onGesture = { gesture ->
                                 // 本回调由 pointerInteropFilter 在触摸事件分发路径上同步调用，
                                 // 而 dispatch 内部是跨进程的媒体控制调用，必须切到 IO 线程，

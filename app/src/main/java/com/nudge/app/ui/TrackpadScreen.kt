@@ -68,6 +68,7 @@ import com.nudge.app.gesture.Gesture
 import com.nudge.app.gesture.GestureRecognizer
 import com.nudge.app.gesture.TouchEvent
 import com.nudge.app.gesture.TouchEventType
+import com.nudge.app.lyrics.LyricsState
 import com.nudge.app.media.TrackInfo
 import com.nudge.app.media.formatDuration
 import kotlinx.coroutines.delay
@@ -82,6 +83,7 @@ fun TrackpadScreen(
     track: TrackInfo?,
     config: NudgeConfig,
     hasPermission: Boolean,
+    lyricsState: LyricsState,
     onGesture: (Gesture) -> Unit,
     onOpenSettings: () -> Unit,
 ) {
@@ -134,6 +136,10 @@ fun TrackpadScreen(
                 },
             contentAlignment = Alignment.Center,
         ) {
+            // 歌词画在最底层，触摸事件由外层 Box 的 pointerInteropFilter 接收，
+            // 本层不加任何 pointer 修饰符，故不影响手势识别
+            LyricsOverlay(state = lyricsState, track = track)
+
             if (!hasPermission) {
                 Text(
                     text = "需要通知使用权才能控制播放\n点击右上角设置授予",
