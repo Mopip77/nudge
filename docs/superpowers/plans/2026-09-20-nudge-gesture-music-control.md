@@ -550,7 +550,7 @@ class GestureRecognizerTest {
     fun `宽松档允许更长的双击间隔`() {
         val r = recognizer(Sensitivity.LOOSE)
         assertNull(r.tap(1, startTime = 0))
-        // 450ms 间隔在宽松档(500ms)内，在标准档(350ms)外
+        // gap = 450-60 = 390ms，在宽松档(500ms)内，在标准档(350ms)外
         assertEquals(Gesture.DOUBLE_TAP, r.tap(1, startTime = 450))
     }
 
@@ -558,8 +558,9 @@ class GestureRecognizerTest {
     fun `严格档拒绝标准档能接受的间隔`() {
         val r = recognizer(Sensitivity.STRICT)
         assertNull(r.tap(1, startTime = 0))
-        // 300ms 间隔在标准档(350ms)内，在严格档(250ms)外
-        assertNull(r.tap(1, startTime = 300))
+        // 第一次点击在 60ms 抬起，gap = 400-60 = 340ms，
+        // 在标准档(350ms)内，在严格档(250ms)外
+        assertNull(r.tap(1, startTime = 400))
     }
 
     @Test
@@ -883,7 +884,13 @@ class GestureRecognizer(
     private val downPositions = mutableMapOf<Int, Pair<Float, Float>>()
     private val downTimes = mutableMapOf<Int, Long>()
 
-    /** 上一批已完成的轻点，用于组成双击。 */
+    /**
+     * 上一批已完成的轻点，用于组成双击。
+     *
+     * [lastTapEndMs] 记录的是上一次点击「全部手指抬起」的时刻，
+     * 双击窗口从这一刻算到下一次按下——即「抬起→按下」的间隔，
+     * 而不是两次按下时刻之差，这样窗口大小才不受第一次按住时长的影响。
+     */
     private var lastTapFingers = 0
     private var lastTapEndMs = Long.MIN_VALUE
 
@@ -1957,7 +1964,8 @@ fun SettingsScreen(
                 val occupiedByOther = occupiedBy != null && occupiedBy != action
                 OptionRow(
                     label = gesture.displayName,
-                    hint = if (occupiedByOther) "已绑定「${occupiedBy.displayName}」" else null,
+                    // occupiedBy 可空，Kotlin 的智能转换不会跨 occupiedByOther 传播
+                    hint = if (occupiedByOther) "已绑定「${occupiedBy?.displayName}」" else null,
                     selected = selected,
                     onClick = { onBindingChange(action, gesture) },
                 )
