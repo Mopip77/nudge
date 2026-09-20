@@ -142,4 +142,118 @@ class GestureRecognizerTest {
         assertNull(r.tap(1, startTime = 0, holdMs = 800))
         assertNull(r.tap(1, startTime = 1000))
     }
+
+    /** 构造「N 指按住 + 第 N+1 指单击」序列。 */
+    private fun GestureRecognizer.holdAndTap(
+        holdFingers: Int,
+        holdStartMs: Long,
+        tapAtMs: Long,
+        tapDurationMs: Long = 50L,
+    ): Gesture? {
+        var result: Gesture? = null
+        for (i in 0 until holdFingers) {
+            onTouchEvent(TouchEvent(TouchEventType.DOWN, i, 100f + i * 50, 100f, holdStartMs + i * 10, i + 1))
+        }
+        val tapId = holdFingers
+        onTouchEvent(
+            TouchEvent(TouchEventType.DOWN, tapId, 400f, 300f, tapAtMs, holdFingers + 1)
+        )
+        val r = onTouchEvent(
+            TouchEvent(TouchEventType.UP, tapId, 400f, 300f, tapAtMs + tapDurationMs, holdFingers)
+        )
+        if (r != null) result = r
+        return result
+    }
+
+    @Test
+    fun `两指长按加一指单击触发`() {
+        val r = recognizer()
+        // 标准档 longPressMs=500，第三指在 600ms 时点击
+        assertEquals(
+            Gesture.TWO_FINGER_HOLD_TAP,
+            r.holdAndTap(holdFingers = 2, holdStartMs = 0, tapAtMs = 600)
+        )
+    }
+
+    @Test
+    fun `三指长按加一指单击触发`() {
+        val r = recognizer()
+        assertEquals(
+            Gesture.THREE_FINGER_HOLD_TAP,
+            r.holdAndTap(holdFingers = 3, holdStartMs = 0, tapAtMs = 700)
+        )
+    }
+
+    @Test
+    fun `长按时长不足则单击不触发`() {
+        val r = recognizer()
+        // 第三指在 200ms 点击，未达 500ms 长按阈值
+        assertNull(r.holdAndTap(holdFingers = 2, holdStartMs = 0, tapAtMs = 200))
+    }
+
+    @Test
+    fun `长按期间可连续单击多次触发`() {
+        val r = recognizer()
+        for (i in 0 until 2) {
+            r.onTouchEvent(TouchEvent(TouchEventType.DOWN, i, 100f + i * 50, 100f, i * 10L, i + 1))
+        }
+        // 第一次单击
+        r.onTouchEvent(TouchEvent(TouchEventType.DOWN, 2, 400f, 300f, 600, 3))
+        assertEquals(
+            Gesture.TWO_FINGER_HOLD_TAP,
+            r.onTouchEvent(TouchEvent(TouchEventType.UP, 2, 400f, 300f, 650, 2))
+        )
+        // 第二次单击（间隔超过 300ms 冷却期）
+        r.onTouchEvent(TouchEvent(TouchEventType.DOWN, 2, 400f, 300f, 1000, 3))
+        assertEquals(
+            Gesture.TWO_FINGER_HOLD_TAP,
+            r.onTouchEvent(TouchEvent(TouchEventType.UP, 2, 400f, 300f, 1050, 2))
+        )
+    }
+
+    @Test
+    fun `冷却期内的重复单击被抑制`() {
+        val r = recognizer()
+        for (i in 0 until 2) {
+            r.onTouchEvent(TouchEvent(TouchEventType.DOWN, i, 100f + i * 50, 100f, i * 10L, i + 1))
+        }
+        r.onTouchEvent(TouchEvent(TouchEventType.DOWN, 2, 400f, 300f, 600, 3))
+        assertEquals(
+            Gesture.TWO_FINGER_HOLD_TAP,
+            r.onTouchEvent(TouchEvent(TouchEventType.UP, 2, 400f, 300f, 650, 2))
+        )
+        // 紧接着再点（距上次触发仅 100ms，小于 300ms 冷却期）
+        r.onTouchEvent(TouchEvent(TouchEventType.DOWN, 2, 400f, 300f, 700, 3))
+        assertNull(r.onTouchEvent(TouchEvent(TouchEventType.UP, 2, 400f, 300f, 750, 2)))
+    }
+
+    @Test
+    fun `长按的手指移动超容差则单击不触发`() {
+        val r = recognizer()
+        r.onTouchEvent(TouchEvent(TouchEventType.DOWN, 0, 100f, 100f, 0, 1))
+        r.onTouchEvent(TouchEvent(TouchEventType.DOWN, 1, 150f, 100f, 10, 2))
+        // 长按手指滑动 100px，超过 24px 容差
+        r.onTouchEvent(TouchEvent(TouchEventType.MOVE, 0, 300f, 100f, 300, 2))
+        r.onTouchEvent(TouchEvent(TouchEventType.DOWN, 2, 400f, 300f, 600, 3))
+        assertNull(r.onTouchEvent(TouchEvent(TouchEventType.UP, 2, 400f, 300f, 650, 2)))
+    }
+
+    @Test
+    fun `四指长按加一指单击不触发任何手势`() {
+        val r = recognizer()
+        assertNull(r.holdAndTap(holdFingers = 4, holdStartMs = 0, tapAtMs = 700))
+    }
+
+    @Test
+    fun `长按加单击后所有手指抬起不产生双击误判`() {
+        val r = recognizer()
+        for (i in 0 until 2) {
+            r.onTouchEvent(TouchEvent(TouchEventType.DOWN, i, 100f + i * 50, 100f, i * 10L, i + 1))
+        }
+        r.onTouchEvent(TouchEvent(TouchEventType.DOWN, 2, 400f, 300f, 600, 3))
+        r.onTouchEvent(TouchEvent(TouchEventType.UP, 2, 400f, 300f, 650, 2))
+        // 长按的两指抬起，不应再产生手势
+        assertNull(r.onTouchEvent(TouchEvent(TouchEventType.UP, 0, 100f, 100f, 700, 1)))
+        assertNull(r.onTouchEvent(TouchEvent(TouchEventType.UP, 1, 150f, 100f, 710, 0)))
+    }
 }
