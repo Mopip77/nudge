@@ -99,8 +99,12 @@ metadata keys (11):
 | 双击 | 1 指，两次完整 down-up，间隔 < `doubleTapWindow` |
 | 两指双击 | 2 指同时按下，两次，间隔 < `doubleTapWindow` |
 | 三指双击 | 3 指同时按下，两次 |
-| 两指长按 + 一指单击 | 2 指按住超过 `longPressMs`，保持按住期间第 3 指 down-up |
-| 三指长按 + 一指单击 | 3 指按住超过 `longPressMs`，保持按住期间第 4 指 down-up |
+| 两指长按 + 一指单击 | 2 指按下超过 `holdBaseReadyMs`（底座就位），保持按住期间第 3 指 down-up |
+| 三指长按 + 一指单击 | 3 指按下超过 `holdBaseReadyMs`（底座就位），保持按住期间第 4 指 down-up |
+
+**关于「长按」的语义**：此处的「长按」并非要求用户刻意按住很久，真实语义是「先放上 N 根手指作为底座，再用另一根手指点击」。底座只需处于按下状态即可，`holdBaseReadyMs` 只是一个短去抖阈值（标准档 120ms），用于把本手势与「N 指同时双击」区分开。
+
+**约束**：`holdBaseReadyMs` 必须 ≥ `multiTouchSlopMs`，否则「N 指同时按下」会同时满足「N-1 指底座已就位 + 一指单击」，两个手势判定撞车。宽松档因此取 150ms 而非等比例缩放值。
 
 「同时按下 N 指」的判定：N 根手指的 down 事件全部落在 `multiTouchSlop` 时间窗内。
 
