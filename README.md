@@ -1,6 +1,32 @@
+<div align="center">
+
 # nudge
 
-把整个屏幕当作触控板，用不易误触的多指复合手势控制音乐播放。核心场景是**盲操**——手机在兜里或屏幕朝下时，不看屏幕也能可靠地切歌和收藏。
+**把整个屏幕当作触控板，不看屏幕也能切歌和收藏。**
+
+[![Release](https://img.shields.io/github/v/release/Mopip77/nudge?style=flat-square)](https://github.com/Mopip77/nudge/releases)
+[![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
+[![Platform](https://img.shields.io/badge/Android-8.0%2B-3DDC84?style=flat-square&logo=android&logoColor=white)](https://github.com/Mopip77/nudge/releases)
+[![Kotlin](https://img.shields.io/badge/Kotlin-Compose-7F52FF?style=flat-square&logo=kotlin&logoColor=white)](https://kotlinlang.org)
+
+</div>
+
+---
+
+nudge 是一个 Android 音乐控制 app，核心场景是**盲操**——手机在兜里、握在手上或屏幕朝下时，用不易误触的多指复合手势控制播放，全程不需要看屏幕，靠震动确认结果。
+
+<div align="center">
+  <img src="docs/images/screenshot-lyrics.png" width="300" alt="实时歌词展示" />
+  <img src="docs/images/screenshot-settings.png" width="300" alt="手势设置" />
+</div>
+
+## 特性
+
+- **盲操手势** — 多指复合手势，为「看不见屏幕」设计，日常握持不会误触
+- **震动反馈** — 每种结果的震动模式不同，不看屏幕也知道发生了什么
+- **实时歌词** — Apple Music 观感的滚动歌词，景深模糊 + 边缘淡出，可关闭
+- **三档灵敏度** — 在「容易触发」和「不易误触」之间按手感选择
+- **手势可改绑** — 五种手势自由绑定到动作，冲突时有提示
 
 首版支持两个动作：**下一首** 和 **网易云收藏（红心）**。
 
@@ -45,8 +71,11 @@
 
 ## 兼容性
 
-- **下一首**：对任意音乐应用有效。优先控制网易云，网易云无活跃会话时控制第一个正在播放的应用。
-- **收藏**：**仅对网易云音乐有效**。各家播放器的收藏实现不同，需要逐个适配。
+| 功能 | 支持范围 |
+|---|---|
+| 下一首 | 任意音乐应用。优先控制网易云，网易云无活跃会话时控制第一个正在播放的应用 |
+| 收藏 | **仅网易云音乐**。各家播放器的收藏实现不同，需要逐个适配 |
+| 歌词 | 来自网易云公开接口，纯音乐或无歌词时不显示 |
 
 在三星 SM-G9810 / Android 13 + 网易云 9.5.95 上实测通过。
 
@@ -69,6 +98,21 @@ export JAVA_HOME=/opt/homebrew/opt/openjdk@17   # 按你的实际路径改
 
 `assembleRelease` 在本地不带签名配置时会产出 unsigned APK（装不上），正式包由 CI 出。
 
+### 架构
+
+```
+TrackpadScreen / SettingsScreen  (Compose)
+        │ MotionEvent
+GestureRecognizer  ──► Gesture         ConfigStore (DataStore)
+        │
+ActionDispatcher  ──► Vibrator
+        │
+MediaControlRepository ──► NotificationListenerService → MediaSessionManager
+                           回退: AudioManager.dispatchMediaKeyEvent
+```
+
+`GestureRecognizer` 是纯 Kotlin 状态机，不依赖任何 Android 类，因此能在 JVM 上直接单元测试——多指手势的边界条件太多，靠真机手测不现实。
+
 ### 发布
 
 推一个 `v` 开头的 tag 即可，GitHub Actions 会自动构建签名 APK 并发布到 Release：
@@ -87,3 +131,11 @@ git push origin v1.2.3
 ## 设计文档
 
 `docs/superpowers/specs/` 下有完整设计文档，记录了网易云 MediaSession 的真机实测数据和由此导出的设计约束。
+
+## 致谢
+
+歌词字体使用 [Noto Sans SC](https://fonts.google.com/noto/specimen/Noto+Sans+SC)（SIL Open Font License 1.1）。
+
+## License
+
+[MIT](LICENSE) © Mopip77
