@@ -28,7 +28,7 @@
 export JAVA_HOME=/opt/homebrew/opt/openjdk@17
 export PATH=$JAVA_HOME/bin:$PATH
 unset JAVA_TOOL_OPTIONS
-cd /Users/bjhl/project/mine/nudge
+cd <项目根目录>
 ```
 
 ## File Structure
@@ -111,7 +111,7 @@ kotlin.code.style=official
 
 `local.properties`:
 ```properties
-sdk.dir=/Users/bjhl/Library/Android/sdk
+sdk.dir=<Android SDK 路径>
 ```
 
 - [ ] **Step 2: 创建应用模块构建脚本**
@@ -240,7 +240,7 @@ class MainActivity : ComponentActivity() {
 - [ ] **Step 5: 构建验证 Compose 工具链**
 
 ```bash
-export JAVA_HOME=/opt/homebrew/opt/openjdk@17 && export PATH=$JAVA_HOME/bin:$PATH && unset JAVA_TOOL_OPTIONS && cd /Users/bjhl/project/mine/nudge && gradle assembleDebug
+export JAVA_HOME=/opt/homebrew/opt/openjdk@17 && export PATH=$JAVA_HOME/bin:$PATH && unset JAVA_TOOL_OPTIONS && cd <项目根目录> && gradle assembleDebug
 ```
 Expected: `BUILD SUCCESSFUL`。首次构建需下载 Compose 依赖，可能耗时数分钟。
 若报 Compose 编译器版本不匹配，检查 `kotlinCompilerExtensionVersion` 是否为 `1.5.10`（对应 Kotlin 1.9.22）。
@@ -323,7 +323,7 @@ class SensitivityTest {
 - [ ] **Step 2: 运行测试确认失败**
 
 ```bash
-export JAVA_HOME=/opt/homebrew/opt/openjdk@17 && export PATH=$JAVA_HOME/bin:$PATH && unset JAVA_TOOL_OPTIONS && cd /Users/bjhl/project/mine/nudge && gradle :app:testDebugUnitTest --tests '*SensitivityTest*'
+export JAVA_HOME=/opt/homebrew/opt/openjdk@17 && export PATH=$JAVA_HOME/bin:$PATH && unset JAVA_TOOL_OPTIONS && cd <项目根目录> && gradle :app:testDebugUnitTest --tests '*SensitivityTest*'
 ```
 Expected: 编译失败，`Unresolved reference: Sensitivity`
 
@@ -393,7 +393,7 @@ data class TouchEvent(
 - [ ] **Step 4: 运行测试确认通过**
 
 ```bash
-export JAVA_HOME=/opt/homebrew/opt/openjdk@17 && export PATH=$JAVA_HOME/bin:$PATH && unset JAVA_TOOL_OPTIONS && cd /Users/bjhl/project/mine/nudge && gradle :app:testDebugUnitTest --tests '*SensitivityTest*'
+export JAVA_HOME=/opt/homebrew/opt/openjdk@17 && export PATH=$JAVA_HOME/bin:$PATH && unset JAVA_TOOL_OPTIONS && cd <项目根目录> && gradle :app:testDebugUnitTest --tests '*SensitivityTest*'
 ```
 Expected: `BUILD SUCCESSFUL`，4 个测试通过
 
@@ -576,7 +576,7 @@ class GestureRecognizerTest {
 - [ ] **Step 2: 运行测试确认失败**
 
 ```bash
-export JAVA_HOME=/opt/homebrew/opt/openjdk@17 && export PATH=$JAVA_HOME/bin:$PATH && unset JAVA_TOOL_OPTIONS && cd /Users/bjhl/project/mine/nudge && gradle :app:testDebugUnitTest --tests '*GestureRecognizerTest*'
+export JAVA_HOME=/opt/homebrew/opt/openjdk@17 && export PATH=$JAVA_HOME/bin:$PATH && unset JAVA_TOOL_OPTIONS && cd <项目根目录> && gradle :app:testDebugUnitTest --tests '*GestureRecognizerTest*'
 ```
 Expected: 编译失败，`Unresolved reference: GestureRecognizer`
 
@@ -697,7 +697,7 @@ class GestureRecognizer(
 - [ ] **Step 4: 运行测试确认通过**
 
 ```bash
-export JAVA_HOME=/opt/homebrew/opt/openjdk@17 && export PATH=$JAVA_HOME/bin:$PATH && unset JAVA_TOOL_OPTIONS && cd /Users/bjhl/project/mine/nudge && gradle :app:testDebugUnitTest --tests '*GestureRecognizerTest*'
+export JAVA_HOME=/opt/homebrew/opt/openjdk@17 && export PATH=$JAVA_HOME/bin:$PATH && unset JAVA_TOOL_OPTIONS && cd <项目根目录> && gradle :app:testDebugUnitTest --tests '*GestureRecognizerTest*'
 ```
 Expected: `BUILD SUCCESSFUL`，13 个测试全部通过
 
@@ -844,7 +844,7 @@ git commit -m "feat: 双击类手势识别（单指/两指/三指）"
 - [ ] **Step 2: 运行测试确认失败**
 
 ```bash
-export JAVA_HOME=/opt/homebrew/opt/openjdk@17 && export PATH=$JAVA_HOME/bin:$PATH && unset JAVA_TOOL_OPTIONS && cd /Users/bjhl/project/mine/nudge && gradle :app:testDebugUnitTest --tests '*GestureRecognizerTest*'
+export JAVA_HOME=/opt/homebrew/opt/openjdk@17 && export PATH=$JAVA_HOME/bin:$PATH && unset JAVA_TOOL_OPTIONS && cd <项目根目录> && gradle :app:testDebugUnitTest --tests '*GestureRecognizerTest*'
 ```
 Expected: FAIL，新增的 8 个测试中至少 `两指长按加一指单击触发` 失败（期望 TWO_FINGER_HOLD_TAP，实际 null）
 
@@ -1043,7 +1043,7 @@ class GestureRecognizer(
 - [ ] **Step 4: 运行全部手势测试确认通过**
 
 ```bash
-export JAVA_HOME=/opt/homebrew/opt/openjdk@17 && export PATH=$JAVA_HOME/bin:$PATH && unset JAVA_TOOL_OPTIONS && cd /Users/bjhl/project/mine/nudge && gradle :app:testDebugUnitTest --tests '*GestureRecognizerTest*'
+export JAVA_HOME=/opt/homebrew/opt/openjdk@17 && export PATH=$JAVA_HOME/bin:$PATH && unset JAVA_TOOL_OPTIONS && cd <项目根目录> && gradle :app:testDebugUnitTest --tests '*GestureRecognizerTest*'
 ```
 Expected: `BUILD SUCCESSFUL`，21 个测试全部通过（13 个双击 + 8 个长按）
 
@@ -1281,7 +1281,7 @@ class MediaControlRepository(private val context: Context) {
 - [ ] **Step 4: 编译验证**
 
 ```bash
-export JAVA_HOME=/opt/homebrew/opt/openjdk@17 && export PATH=$JAVA_HOME/bin:$PATH && unset JAVA_TOOL_OPTIONS && cd /Users/bjhl/project/mine/nudge && gradle :app:compileDebugKotlin
+export JAVA_HOME=/opt/homebrew/opt/openjdk@17 && export PATH=$JAVA_HOME/bin:$PATH && unset JAVA_TOOL_OPTIONS && cd <项目根目录> && gradle :app:compileDebugKotlin
 ```
 Expected: `BUILD SUCCESSFUL`
 
@@ -1416,7 +1416,7 @@ class ConfigStore(private val context: Context) {
 - [ ] **Step 2: 编译验证**
 
 ```bash
-export JAVA_HOME=/opt/homebrew/opt/openjdk@17 && export PATH=$JAVA_HOME/bin:$PATH && unset JAVA_TOOL_OPTIONS && cd /Users/bjhl/project/mine/nudge && gradle :app:compileDebugKotlin
+export JAVA_HOME=/opt/homebrew/opt/openjdk@17 && export PATH=$JAVA_HOME/bin:$PATH && unset JAVA_TOOL_OPTIONS && cd <项目根目录> && gradle :app:compileDebugKotlin
 ```
 Expected: `BUILD SUCCESSFUL`
 
@@ -1510,7 +1510,7 @@ class ActionDispatcher(
 - [ ] **Step 2: 编译验证**
 
 ```bash
-export JAVA_HOME=/opt/homebrew/opt/openjdk@17 && export PATH=$JAVA_HOME/bin:$PATH && unset JAVA_TOOL_OPTIONS && cd /Users/bjhl/project/mine/nudge && gradle :app:compileDebugKotlin
+export JAVA_HOME=/opt/homebrew/opt/openjdk@17 && export PATH=$JAVA_HOME/bin:$PATH && unset JAVA_TOOL_OPTIONS && cd <项目根目录> && gradle :app:compileDebugKotlin
 ```
 Expected: `BUILD SUCCESSFUL`
 
@@ -1834,7 +1834,7 @@ private fun currentPoints(event: MotionEvent): List<Offset> {
 - [ ] **Step 3: 编译验证**
 
 ```bash
-export JAVA_HOME=/opt/homebrew/opt/openjdk@17 && export PATH=$JAVA_HOME/bin:$PATH && unset JAVA_TOOL_OPTIONS && cd /Users/bjhl/project/mine/nudge && gradle :app:compileDebugKotlin
+export JAVA_HOME=/opt/homebrew/opt/openjdk@17 && export PATH=$JAVA_HOME/bin:$PATH && unset JAVA_TOOL_OPTIONS && cd <项目根目录> && gradle :app:compileDebugKotlin
 ```
 Expected: `BUILD SUCCESSFUL`
 
@@ -2052,7 +2052,7 @@ private fun OptionRow(
 - [ ] **Step 2: 编译验证**
 
 ```bash
-export JAVA_HOME=/opt/homebrew/opt/openjdk@17 && export PATH=$JAVA_HOME/bin:$PATH && unset JAVA_TOOL_OPTIONS && cd /Users/bjhl/project/mine/nudge && gradle :app:compileDebugKotlin
+export JAVA_HOME=/opt/homebrew/opt/openjdk@17 && export PATH=$JAVA_HOME/bin:$PATH && unset JAVA_TOOL_OPTIONS && cd <项目根目录> && gradle :app:compileDebugKotlin
 ```
 Expected: `BUILD SUCCESSFUL`
 
@@ -2185,7 +2185,7 @@ class MainActivity : ComponentActivity() {
 - [ ] **Step 2: 构建并安装到真机**
 
 ```bash
-export JAVA_HOME=/opt/homebrew/opt/openjdk@17 && export PATH=$JAVA_HOME/bin:$PATH && unset JAVA_TOOL_OPTIONS && cd /Users/bjhl/project/mine/nudge && gradle assembleDebug && adb install -r app/build/outputs/apk/debug/app-debug.apk
+export JAVA_HOME=/opt/homebrew/opt/openjdk@17 && export PATH=$JAVA_HOME/bin:$PATH && unset JAVA_TOOL_OPTIONS && cd <项目根目录> && gradle assembleDebug && adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 Expected: `BUILD SUCCESSFUL` 且 `Success`
 
@@ -2223,7 +2223,7 @@ Expected: `hasHeart=true`（两次收藏手势后仍为 true，证明「只点�
 - [ ] **Step 6: 运行全部单元测试**
 
 ```bash
-export JAVA_HOME=/opt/homebrew/opt/openjdk@17 && export PATH=$JAVA_HOME/bin:$PATH && unset JAVA_TOOL_OPTIONS && cd /Users/bjhl/project/mine/nudge && gradle :app:testDebugUnitTest
+export JAVA_HOME=/opt/homebrew/opt/openjdk@17 && export PATH=$JAVA_HOME/bin:$PATH && unset JAVA_TOOL_OPTIONS && cd <项目根目录> && gradle :app:testDebugUnitTest
 ```
 Expected: `BUILD SUCCESSFUL`，25 个测试全部通过
 
