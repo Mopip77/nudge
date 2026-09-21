@@ -27,6 +27,15 @@ object LrcParser {
             // 表示同一句在多处重复出现
             val text = line.substring(tags.last().range.last + 1).trim()
 
+            // 丢弃只有时间戳没有文字的行。网易云用这种行标记间奏留白，
+            // 但它在 UI 上会占满一个行高却没有字，且一旦成为「当前行」，
+            // 看起来就是整屏没有任何一句被点亮（实测「有没有」的 2:22 就是这种行）。
+            //
+            // 丢弃后 indexAt 自然回落到上一句，间奏期间保持上一句高亮。
+            // 这不会影响其余行的高亮时机：每行都带绝对 timeMs，二分查找按时间定位，
+            // 删掉一项不改变任何其他行的时间。
+            if (text.isEmpty()) continue
+
             for (tag in tags) {
                 val timeMs = toMillis(tag) ?: continue
                 result.add(LyricLine(timeMs, text))

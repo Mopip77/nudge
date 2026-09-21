@@ -93,6 +93,8 @@ private const val EDGE_FADE_RATIO = 0.12f
  * 必须回到 tools 里重新生成子集，不能只改这里。
  */
 private val LyricFont = FontFamily(
+    // Medium 档目前没有文本在用（歌词统一用 Bold），保留是为了留一个比 Bold 轻的
+    // 备选档：删掉就得连带删字体文件，将来想调轻得回 tools 重新生成子集。
     Font(R.font.noto_sans_sc_medium, FontWeight.Medium),
     Font(R.font.noto_sans_sc_bold, FontWeight.Bold),
 )
@@ -275,7 +277,11 @@ private fun LyricRow(
             textAlign = TextAlign.Center,
             fontSize = if (isCurrent) CURRENT_FONT_SIZE else OTHER_FONT_SIZE,
             fontFamily = LyricFont,
-            fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Medium,
+            // 当前行和其余行都用 Bold：字重整体加粗更接近 Apple Music 的观感。
+            // 两档都落在真实字体文件上（只随包了 Medium 和 Bold 两个档），
+            // 不会触发系统的合成伪粗体——伪粗体在中文上会把笔画糊成一团。
+            // 当前行与其余行的区分改由字号、透明度、模糊三者承担，已经足够。
+            fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onSurface,
             // 折行上限 3 行：绝大多数歌词两行够用，留第三行兜底超长句；
             // 再多就会把上下文行全挤出屏幕，反而看不出唱到哪了
