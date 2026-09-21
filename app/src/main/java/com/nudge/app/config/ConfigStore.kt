@@ -35,6 +35,13 @@ data class NudgeConfig(
     val themeMode: ThemeMode,
     /** 关闭后既不显示歌词，也不发起歌词网络请求。 */
     val lyricsEnabled: Boolean,
+    /**
+     * 开启后进入主界面自动调用 `startLockTask()` 固定屏幕。
+     *
+     * 默认关：它会弹系统确认框，且退出方式（长按返回+概览）需要用户预先知道，
+     * 不该在用户没主动选择时强加。对「放口袋里盲操」这类场景才值得开。
+     */
+    val screenPinningEnabled: Boolean,
 ) {
     /** 反查：某手势绑定到了哪个动作。未绑定返回 null。 */
     fun gestureToAction(gesture: Gesture): ActionType? =
@@ -49,6 +56,7 @@ data class NudgeConfig(
             sensitivity = Sensitivity.STANDARD,
             themeMode = ThemeMode.SYSTEM,
             lyricsEnabled = true,
+            screenPinningEnabled = false,
         )
     }
 }
@@ -86,6 +94,8 @@ class ConfigStore(private val context: Context) {
                 ?.let { name -> ThemeMode.entries.firstOrNull { it.name == name } }
                 ?: NudgeConfig.DEFAULT.themeMode,
             lyricsEnabled = prefs[LYRICS_ENABLED_KEY] ?: NudgeConfig.DEFAULT.lyricsEnabled,
+            screenPinningEnabled = prefs[SCREEN_PINNING_KEY]
+                ?: NudgeConfig.DEFAULT.screenPinningEnabled,
         )
     }
 
@@ -122,10 +132,15 @@ class ConfigStore(private val context: Context) {
         context.dataStore.edit { it[LYRICS_ENABLED_KEY] = enabled }
     }
 
+    suspend fun setScreenPinningEnabled(enabled: Boolean) {
+        context.dataStore.edit { it[SCREEN_PINNING_KEY] = enabled }
+    }
+
     private companion object {
         val SENSITIVITY_KEY = stringPreferencesKey("sensitivity")
         val THEME_KEY = stringPreferencesKey("theme_mode")
         val LYRICS_ENABLED_KEY = booleanPreferencesKey("lyrics_enabled")
+        val SCREEN_PINNING_KEY = booleanPreferencesKey("screen_pinning_enabled")
         fun bindingKey(action: ActionType) = stringPreferencesKey("binding_${action.name}")
 
         /** 写入侧必须和读取侧用同一套回落规则，否则改 A 会把未写过的 B 悄悄重置成空。 */

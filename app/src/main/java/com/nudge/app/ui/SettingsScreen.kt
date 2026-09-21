@@ -5,11 +5,14 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -48,6 +51,7 @@ fun SettingsScreen(
     onSensitivityChange: (Sensitivity) -> Unit,
     onThemeChange: (ThemeMode) -> Unit,
     onLyricsEnabledChange: (Boolean) -> Unit,
+    onScreenPinningChange: (Boolean) -> Unit,
     onRequestPermission: () -> Unit,
     currentVersion: String,
     updateState: UpdateState,
@@ -60,6 +64,8 @@ fun SettingsScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
+            // 沉浸式下窗口铺到物理边缘，设置页也要避开刘海／挖孔
+            .windowInsetsPadding(WindowInsets.safeDrawing)
             .verticalScroll(rememberScrollState())
     ) {
         Row(
@@ -146,6 +152,22 @@ fun SettingsScreen(
             selected = config.lyricsEnabled,
             multiSelect = true,
             onClick = { onLyricsEnabledChange(!config.lyricsEnabled) },
+        )
+
+        SectionTitle("防误触")
+        OptionRow(
+            label = "固定屏幕",
+            hint = "开启后其他应用与通知无法打断；退出请长按「返回 + 概览」，" +
+                   "手势导航下为上滑并按住",
+            selected = config.screenPinningEnabled,
+            multiSelect = true,
+            onClick = { onScreenPinningChange(!config.screenPinningEnabled) },
+        )
+        Text(
+            text = "系统栏已默认隐藏，边缘滑动需两次才触发返回／主页。",
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
+            modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp),
         )
 
         SectionTitle("主题")

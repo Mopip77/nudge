@@ -3,6 +3,7 @@ package com.nudge.app.config
 import com.nudge.app.gesture.Gesture
 import com.nudge.app.gesture.Sensitivity
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Test
 
@@ -13,6 +14,7 @@ class NudgeConfigTest {
         sensitivity = Sensitivity.STANDARD,
         themeMode = ThemeMode.SYSTEM,
         lyricsEnabled = true,
+        screenPinningEnabled = false,
     )
 
     @Test
@@ -69,6 +71,13 @@ class NudgeConfigTest {
             ActionType.LIKE,
             NudgeConfig.DEFAULT.gestureToAction(Gesture.THREE_FINGER_DOUBLE_TAP),
         )
+    }
+
+    @Test
+    fun `屏幕固定默认关闭`() {
+        // 它会弹系统确认框、退出方式也需要用户预先知道，
+        // 不该在用户没主动选择时强加。改默认值前先想清楚这点。
+        assertFalse(NudgeConfig.DEFAULT.screenPinningEnabled)
     }
 
     @Test

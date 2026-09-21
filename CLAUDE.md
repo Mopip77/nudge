@@ -62,6 +62,54 @@ Termux 这些声明了同一 MIME 的应用全列出来，用户得自己认出�
 deprecated（官方推荐 `PackageInstaller` Session API），但那套要多写一个安装结果广播接收器，
 对一个手动触发的更新入口不划算。
 
+## 防误触
+
+盲操场景里误触的代价是**不对称**的：误触发一次「下一首」只是烦人，但误滑退出应用后
+用户看不见屏幕、根本不知道自己已经退出，后续所有手势都打在别的应用上。所以这里优先
+防「意外退出」，而不是防「手势识别错」。
+
+三层，强度递增：
+
+1. **沉浸式粘性 + 全屏手势排除区**（`ui/AntiMistouch.kt`，默认生效）
+2. **返回键连按两次才退出**（`MainActivity`，仅主界面，设置页不加）
+3. **屏幕固定**（`applyScreenPinning`，设置项，默认关）
+
+### 沉浸式与手势排除区是**配套的**，不能只用一个
+
+系统默认每条边只认最底部 200dp 的手势排除区，全屏范围会被截断。官方对该限制的
+唯一豁免是「导航栏处于粘性隐藏状态」——所以 `excludeFromSystemGestures()` 单独调用
+在全屏触摸区上基本无效，必须先 `enterImmersiveMode()`。
+
+必须用 `BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE`，不能用 `BEHAVIOR_SHOW_BARS_BY_SWIPE`：
+前者才是「二次触发」语义（第一次边缘滑动只召出系统栏，第二次才真的导航），
+后者一次滑动就永久恢复系统栏，起不到防误触作用。
+
+两者都在 `onWindowFocusChanged` 里重新施加，缺一不可：粘性沉浸在切走再切回后会丢失；
+排除区要 decorView 的实际尺寸，`onCreate` 时还没测量完，拿到的是 0。
+
+底部 home / 快速切换手势**无法排除**，系统不提供接口。这是必要的——它是用户唯一可靠的
+逃生通道，否则粘性沉浸 + 全边排除会把人锁死在应用里。别去找绕过它的办法。
+
+### 屏幕固定默认关，且不做 device owner
+
+非 device owner 时 `startLockTask()` 退化为屏幕固定：弹系统确认框，长按「返回+概览」可退出。
+这个强度正好——挡住误触但不锁死用户。真 kiosk 要 DPC 白名单（`setLockTaskPackages`），
+需要 device owner 权限，普通应用不该做。
+
+`stopLockTask()` 在未固定时会抛异常，`startLockTask()` 在已固定时无效果，故调用前先查
+`lockTaskModeState`。有测试拦着「默认关」这个方向。
+
+### 没做接近传感器口袋模式
+
+它与 `FLAG_KEEP_SCREEN_ON`（盲操要保持亮屏）的设计意图冲突，且各家 ROM 传感器行为差异大，
+容易变成新的 bug 源。这是权衡后的决定，不是遗漏。
+
+### 沉浸式的副作用：窗口铺到物理边缘
+
+`setDecorFitsSystemWindows(false)` 后内容会画到刘海／挖孔下面，两个页面的根布局都加了
+`windowInsetsPadding(WindowInsets.safeDrawing)`。用 `safeDrawing` 而非 `statusBars`——
+系统栏此时本就是隐藏的，真正要避的是切口。
+
 ## 应用内更新
 
 设置页手动触发，不做启动自动检查——这是刻意的，盲操工具不该在启动时弹更新提示。
@@ -86,7 +134,7 @@ deprecated（官方推荐 `PackageInstaller` Session API），但那套要多写
 JAVA_HOME=/opt/homebrew/opt/openjdk@17 ./gradlew test
 ```
 
-72 个单元测试，主体在 `GestureRecognizer`——正例（五种手势 × 三档灵敏度）、边界（阈值临界）、负例（滑动、指数不符、超时）。**动手势逻辑必须补相应测试**，尤其是防误触的负例。
+75 个单元测试，主体在 `GestureRecognizer`——正例（五种手势 × 三档灵敏度）、边界（阈值临界）、负例（滑动、指数不符、超时）。**动手势逻辑必须补相应测试**，尤其是防误触的负例。
 
 `org.json` 在 JVM 单测里只有会抛「not mocked」的桩实现，所以 `build.gradle.kts` 里额外引了
 `org.json:json` 作为 testImplementation 覆盖掉它。**不要改用 `returnDefaultValues = true`**——

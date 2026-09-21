@@ -1,7 +1,11 @@
 package com.nudge.app
 
+import android.app.ActivityManager
+import android.content.Context
 import android.os.Bundle
+import android.os.SystemClock
 import android.view.WindowManager
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -24,6 +28,8 @@ import com.nudge.app.media.MediaControlRepository
 import com.nudge.app.media.TrackInfo
 import com.nudge.app.ui.SettingsScreen
 import com.nudge.app.ui.TrackpadScreen
+import com.nudge.app.ui.enterImmersiveMode
+import com.nudge.app.ui.excludeFromSystemGestures
 import com.nudge.app.update.ApkDownloader
 import com.nudge.app.update.UpdateChecker
 import com.nudge.app.update.UpdateInstaller
@@ -43,6 +49,14 @@ import java.io.File
  */
 private const val POST_ACTION_REFRESH_DELAY_MS = 250L
 
+/**
+ * 两次返回键在此窗口内按下才真的退出。
+ *
+ * 盲操下用户看不到「再按一次退出」的提示，这个窗口的作用不是给人读提示，
+ * 而是让「口袋里蹭到一次返回」不足以退出——真要退出的人会连按。
+ */
+private const val DOUBLE_BACK_WINDOW_MS = 2000L
+
 class MainActivity : ComponentActivity() {
 
     private lateinit var repository: MediaControlRepository
@@ -59,6 +73,10 @@ class MainActivity : ComponentActivity() {
 
         // 盲操场景下屏幕熄灭就没法操作了
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
+        // 沉浸式粘性：边缘滑动只能召出系统栏，要再滑一次才真的导航。
+        // 同时它是下面全屏手势排除区生效的前提（见 AntiMistouch.kt）。
+        enterImmersiveMode()
 
         setContent {
             val config by configStore.config.collectAsState(initial = NudgeConfig.DEFAULT)
@@ -85,6 +103,12 @@ class MainActivity : ComponentActivity() {
                     track = current
                     delay(1000)
                 }
+            }
+
+            // 屏幕固定跟随配置开关。放在 setContent 里而非 onResume，是因为
+            // config 来自 DataStore 的 Flow，首帧拿到的是 DEFAULT，真实值稍后才到。
+            LaunchedEffect(config.screenPinningEnabled) {
+                applyScreenPinning(config.screenPinningEnabled)
             }
 
             // 歌曲变化时重新拉歌词。以 mediaId 为 key，切歌会自动取消上一次
@@ -127,6 +151,9 @@ class MainActivity : ComponentActivity() {
                             },
                             onLyricsEnabledChange = {
                                 scope.launch { configStore.setLyricsEnabled(it) }
+                            },
+                            onScreenPinningChange = {
+                                scope.launch { configStore.setScreenPinningEnabled(it) }
                             },
                             onRequestPermission = {
                                 MediaControlRepository.openNotificationSettings(this@MainActivity)
@@ -182,6 +209,22 @@ class MainActivity : ComponentActivity() {
                             onBack = { showSettings = false },
                         )
                     } else {
+                        // 主界面的返回键要连按两次才退出。设置页不加这层——
+                        // 那里是明视操作，且「返回」只是退回主界面，误触没有代价。
+                        var lastBackMs by remember { mutableStateOf(0L) }
+                        BackHandler {
+                            val now = SystemClock.elapsedRealtime()
+                            if (now - lastBackMs < DOUBLE_BACK_WINDOW_MS) {
+                                finish()
+                            } else {
+                                lastBackMs = now
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    "再按一次返回退出",
+                                    Toast.LENGTH_SHORT,
+                                ).show()
+                            }
+                        }
                         TrackpadScreen(
                             track = track,
                             config = config,
@@ -216,6 +259,39 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
+        }
+    }
+
+    /**
+     * 重新施加沉浸式，并把整块窗口登记为手势排除区。
+     *
+     * 两件事都必须在这里做而不是只在 onCreate：
+     * - 沉浸式粘性在切走再切回后会丢失，导航栏退回默认行为；
+     * - 排除区要的是 decorView 的实际尺寸，onCreate 时还没测量完，拿到的是 0。
+     */
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (!hasFocus) return
+        enterImmersiveMode()
+        window.decorView.excludeFromSystemGestures()
+    }
+
+    /**
+     * 按配置开关屏幕固定。
+     *
+     * 非 device owner 时 `startLockTask()` 退化为屏幕固定：系统弹框征求同意，
+     * 用户长按返回+概览可以退出。这正是我们要的强度——挡住误触，但不锁死用户。
+     * 真正的 kiosk 需要 DPC 白名单，那要 device owner 权限，普通应用不该做。
+     */
+    private fun applyScreenPinning(enabled: Boolean) {
+        val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        val pinned = am.lockTaskModeState != ActivityManager.LOCK_TASK_MODE_NONE
+
+        // 已是目标状态就别重复调用：startLockTask 在已固定时无效果，
+        // 但 stopLockTask 在未固定时会抛异常。
+        if (enabled == pinned) return
+        runCatching {
+            if (enabled) startLockTask() else stopLockTask()
         }
     }
 
