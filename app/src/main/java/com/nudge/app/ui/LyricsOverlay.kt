@@ -1,6 +1,7 @@
 package com.nudge.app.ui
 
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Box
@@ -33,6 +34,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
@@ -66,15 +68,35 @@ private val CURRENT_FONT_SIZE = 26.sp
 private val OTHER_FONT_SIZE = 22.sp
 
 /**
+ * 当前行相对其余行的放大倍率。
+ *
+ * 文本统一按 OTHER_FONT_SIZE 排版，当前行靠 scale 放大到这个倍率（见 [LyricRow]），
+ * 这样换行时大小变化能做成动画，而不是字号突变。
+ */
+private val CURRENT_SCALE = CURRENT_FONT_SIZE.value / OTHER_FONT_SIZE.value
+
+/** 歌词左右边距。放大的行按倍率反向收窄排版宽度，使放大后仍落在这个边距上。 */
+private val SIDE_PADDING = 20.dp
+
+/**
  * 非当前行的最大模糊半径，模拟 Apple Music 的景深效果。
  *
- * 半径随距离递增（见 [LyricRow]），离当前行越远越糊。上限 3.dp 是因为
- * 再大就糊成一团色块，失去"还能认出是歌词"的边界感。
+ * 半径随距离递增（见 [LyricRow]），离当前行越远越糊。
+ *
+ * 上限取 12.dp 是比着 Apple Music 实机观感调的：那里远处几行是彻底化开的色块，
+ * 完全不追求可读——只有紧邻当前行的一两行需要能"预读下一句"，再远的行存在意义
+ * 只是提供景深和位置感。早先取 3.dp 是想保住"还能认出是歌词"的边界感，
+ * 但那样远近层次拉不开，整片歌词看着是平的。
  */
-private val MAX_BLUR = 3.dp
+private val MAX_BLUR = 12.dp
 
-/** 每远离一行增加的模糊半径。 */
-private val BLUR_PER_LINE = 0.9.dp
+/**
+ * 每远离一行增加的模糊半径。
+ *
+ * 2.6dp/行配合 12dp 上限，意味着第 5 行开外才触顶：近处三四行仍保有层次，
+ * 不会一步糊到底。
+ */
+private val BLUR_PER_LINE = 2.6.dp
 
 /** 上下边缘淡出区占容器高度的比例，约两行的量级。 */
 private const val EDGE_FADE_RATIO = 0.12f
@@ -246,8 +268,12 @@ private fun LyricRow(
     // 随距离连续衰减而非分档，保留向外淡出的层次。
     // 起点 0.62 而不是更低：深色底上中间调的灰会发闷，紧邻当前行的
     // 一两行需要足够亮才能"预读下一句"——这是盲操之外唯一的实际用途。
-    // 衰减 0.055/行比密排时缓，否则叠上模糊会让近处几行直接糊没。
-    val alpha = if (isCurrent) 1f else (0.62f - (distance - 1) * 0.055f).coerceAtLeast(0.14f)
+    //
+    // 衰减放缓到 0.03/行、下限提到 0.34：加大模糊后，去强调主要靠"糊"而不是"暗"
+    // （Apple Music 就是这个路子，远处行并不特别暗，但已经完全化开）。
+    // 若仍按原来衰减到 0.14，叠上 12dp 模糊会让远处几行直接消失，
+    // 失去景深要的那种"下面还有内容"的体量感。
+    val alpha = if (isCurrent) 1f else (0.62f - (distance - 1) * 0.03f).coerceAtLeast(0.34f)
     val animatedAlpha by animateFloatAsState(
         targetValue = alpha,
         animationSpec = tween(SCROLL_ANIM_MS, easing = FastOutSlowInEasing),
@@ -261,21 +287,60 @@ private fun LyricRow(
         isCurrent || android.os.Build.VERSION.SDK_INT < 31 -> 0.dp
         else -> (BLUR_PER_LINE * (distance - 1).coerceAtLeast(0)).coerceAtMost(MAX_BLUR)
     }
+    // 模糊也要过渡：换行时从 12dp 直接跳到 0 是整个"生硬感"里最刺眼的一跳
+    val animatedBlur by animateDpAsState(
+        targetValue = blurRadius,
+        animationSpec = tween(SCROLL_ANIM_MS, easing = FastOutSlowInEasing),
+        label = "lyricBlur",
+    )
+
+    // 当前行放大用 scale 而不是动画 fontSize：动 fontSize 会每帧重新测量排版，
+    // 进而每帧触发 onSizeChanged，把抖动的行高写进 rowHeights——而外层的滚动位移
+    // 正是按 rowHeights 累加算的，会跟着抖。scale 只作用于绘制阶段，测量高度不变。
+    //
+    // 代价是放大时字形是被拉伸的而非按字号重新排版，26/22 这个倍率下肉眼看不出来。
+    val targetScale = if (isCurrent) CURRENT_SCALE else 1f
+    val animatedScale by animateFloatAsState(
+        targetValue = targetScale,
+        animationSpec = tween(SCROLL_ANIM_MS, easing = FastOutSlowInEasing),
+        label = "lyricScale",
+    )
+
+    // 排版宽度要随放大倍率收窄，否则放大后左右溢出、首尾字被裁。
+    // 解 (w - 2p) * scale = w - 2 * SIDE_PADDING 得 p = (w - (w - 2*SIDE_PADDING)/scale) / 2。
+    val screenWidth = LocalConfiguration.current.screenWidthDp.dp
+    val sidePadding = (screenWidth - (screenWidth - SIDE_PADDING * 2) / targetScale) / 2
+    val animatedSidePadding by animateDpAsState(
+        targetValue = sidePadding,
+        animationSpec = tween(SCROLL_ANIM_MS, easing = FastOutSlowInEasing),
+        label = "lyricSidePadding",
+    )
 
     // 高度由内容决定而非写死：长句折行后要撑开，截断成省略号会让歌词直接读不成句。
     // 折行带来的行高不一由外层按实测值累加吸收（见 rowHeights）。
     // heightIn 保证短句仍占满一个标准行高，避免行距忽大忽小。
+    //
+    // 当前行额外留出放大后多占的高度：文本按 OTHER_FONT_SIZE 测量、靠 scale 放大，
+    // 测得的高度是放大前的。不补这一块，折行的当前行放大后会向上下溢出自己的行，
+    // 视觉上贴住相邻行。按最小行高补足即可——放大是绕中心的，两侧各溢出一半。
+    val minHeight = if (isCurrent) LINE_HEIGHT * CURRENT_SCALE else LINE_HEIGHT
+    val animatedMinHeight by animateDpAsState(
+        targetValue = minHeight,
+        animationSpec = tween(SCROLL_ANIM_MS, easing = FastOutSlowInEasing),
+        label = "lyricMinHeight",
+    )
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(min = LINE_HEIGHT)
+            .heightIn(min = animatedMinHeight)
             .onSizeChanged { onHeightMeasured(it.height) },
         contentAlignment = Alignment.Center,
     ) {
         Text(
             text = text,
             textAlign = TextAlign.Center,
-            fontSize = if (isCurrent) CURRENT_FONT_SIZE else OTHER_FONT_SIZE,
+            // 字号恒定，大小差异由 animatedScale 在绘制阶段表达（见上）
+            fontSize = OTHER_FONT_SIZE,
             fontFamily = LyricFont,
             // 当前行和其余行都用 Bold：字重整体加粗更接近 Apple Music 的观感。
             // 两档都落在真实字体文件上（只随包了 Medium 和 Bold 两个档），
@@ -287,14 +352,22 @@ private fun LyricRow(
             // 再多就会把上下文行全挤出屏幕，反而看不出唱到哪了
             maxLines = 3,
             overflow = TextOverflow.Ellipsis,
-            lineHeight = if (isCurrent) CURRENT_FONT_SIZE * 1.3f else OTHER_FONT_SIZE * 1.3f,
+            lineHeight = OTHER_FONT_SIZE * 1.3f,
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = 6.dp)
+                // 放大的行要按倍率收窄排版宽度。文本在缩放前排版，放大是绕中心的，
+                // 若仍按 20dp 排版，放大后左右各溢出 (scale-1)/2 的宽度——
+                // 实测表现为当前行首尾字被裁掉（「Dancing with my phone」的 D 和 e 都没了）。
+                // 收窄后排版宽度 × scale 正好回到 20dp 边距。
+                .padding(horizontal = animatedSidePadding, vertical = 6.dp)
                 // blur 必须在 graphicsLayer 之前：模糊作用于已绘制内容，
                 // 放在后面会先被 alpha 压暗再模糊，远处行几乎看不见
-                .blur(blurRadius)
-                .graphicsLayer { this.alpha = animatedAlpha },
+                .blur(animatedBlur)
+                .graphicsLayer {
+                    this.alpha = animatedAlpha
+                    scaleX = animatedScale
+                    scaleY = animatedScale
+                },
         )
     }
 }
