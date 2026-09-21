@@ -17,3 +17,6 @@ captures/
 .idea/
 *.iml
 .DS_Store
+
+# 本机专属的 Claude 指令：记录开发机环境（设备序列号等），是 public repo，不能提交
+CLAUDE.local.md
