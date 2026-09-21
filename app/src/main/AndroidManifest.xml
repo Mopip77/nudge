@@ -46,6 +46,15 @@
             </intent-filter>
         </receiver>
 
+        <!-- 预设切换。三星「模式与日常安排」经 Tasker 中转调用，无需前台界面。 -->
+        <receiver
+            android:name=".config.ProfileCommandReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.nudge.app.PROFILE" />
+            </intent-filter>
+        </receiver>
+
         <service
             android:name=".media.NudgeNotificationListener"
             android:exported="true"
