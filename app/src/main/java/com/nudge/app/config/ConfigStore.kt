@@ -10,6 +10,7 @@ import androidx.datastore.preferences.preferencesDataStore
 import com.nudge.app.gesture.Gesture
 import com.nudge.app.gesture.Sensitivity
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
 /** 可绑定手势的动作。 */
@@ -75,6 +76,21 @@ internal fun decodeGestures(stored: String): Set<Gesture> =
         .mapNotNull { name -> Gesture.entries.firstOrNull { it.name == name.trim() } }
         .toSet()
 
+/** 槽位数固定为 3。槽位号是广播协议的对外标识，扩容会改变外部已配置好的自动化语义。 */
+const val PROFILE_SLOT_COUNT = 3
+
+/** 一个预设槽位。空槽的 [name] 与 [config] 均为 null。 */
+data class ProfileSlot(val index: Int, val name: String?, val config: NudgeConfig?) {
+    val isEmpty: Boolean get() = name == null || config == null
+}
+
+/**
+ * 解析外部传入的槽位号。非法值返回 null 而不抛异常——
+ * 广播的参数来自 Tasker/adb 等外部工具，什么都可能传进来。
+ */
+fun parseSlotIndex(raw: String?): Int? =
+    raw?.trim()?.toIntOrNull()?.takeIf { it in 1..PROFILE_SLOT_COUNT }
+
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "nudge_config")
 
 class ConfigStore(private val context: Context) {
@@ -136,12 +152,60 @@ class ConfigStore(private val context: Context) {
         context.dataStore.edit { it[SCREEN_PINNING_KEY] = enabled }
     }
 
+    /** 恒为 [PROFILE_SLOT_COUNT] 个元素，空槽也占位——界面靠固定槽位保持位置稳定。 */
+    val profiles: Flow<List<ProfileSlot>> = context.dataStore.data.map { prefs ->
+        (1..PROFILE_SLOT_COUNT).map { index ->
+            val stored = ProfileCodec.decode(prefs[profileKey(index)])
+            ProfileSlot(index, stored?.name, stored?.config)
+        }
+    }
+
+    suspend fun saveProfile(index: Int, name: String, config: NudgeConfig) {
+        require(index in 1..PROFILE_SLOT_COUNT) { "槽位号越界: $index" }
+        val encoded = ProfileCodec.encode(StoredProfile(name, config))
+        context.dataStore.edit { it[profileKey(index)] = encoded }
+    }
+
+    /** 读取预设内容但不应用。返回 null 表示空槽。 */
+    suspend fun readProfile(index: Int): StoredProfile? {
+        if (index !in 1..PROFILE_SLOT_COUNT) return null
+        return ProfileCodec.decode(context.dataStore.data.first()[profileKey(index)])
+    }
+
+    /**
+     * 把预设应用成当前配置。返回被应用的预设，空槽返回 null 且不做任何修改。
+     *
+     * 五个字段**全部**写入，包括值等于默认值的项。不能做「等于默认就不写」的优化：
+     * bindings 的读取侧口径是「没写过 key 才回落默认，写过空串表示用户主动清空」，
+     * 跳过写入会把用户存的空绑定静默恢复成默认绑定。
+     */
+    suspend fun loadProfile(index: Int): StoredProfile? {
+        val stored = readProfile(index) ?: return null
+        val config = stored.config
+        context.dataStore.edit { prefs ->
+            ActionType.entries.forEach { action ->
+                prefs[bindingKey(action)] = encodeGestures(config.bindings[action].orEmpty())
+            }
+            prefs[SENSITIVITY_KEY] = config.sensitivity.name
+            prefs[THEME_KEY] = config.themeMode.name
+            prefs[LYRICS_ENABLED_KEY] = config.lyricsEnabled
+            prefs[SCREEN_PINNING_KEY] = config.screenPinningEnabled
+        }
+        return stored
+    }
+
+    suspend fun deleteProfile(index: Int) {
+        require(index in 1..PROFILE_SLOT_COUNT) { "槽位号越界: $index" }
+        context.dataStore.edit { it.remove(profileKey(index)) }
+    }
+
     private companion object {
         val SENSITIVITY_KEY = stringPreferencesKey("sensitivity")
         val THEME_KEY = stringPreferencesKey("theme_mode")
         val LYRICS_ENABLED_KEY = booleanPreferencesKey("lyrics_enabled")
         val SCREEN_PINNING_KEY = booleanPreferencesKey("screen_pinning_enabled")
         fun bindingKey(action: ActionType) = stringPreferencesKey("binding_${action.name}")
+        fun profileKey(index: Int) = stringPreferencesKey("profile_$index")
 
         /** 写入侧必须和读取侧用同一套回落规则，否则改 A 会把未写过的 B 悄悄重置成空。 */
         fun Preferences.gesturesOf(action: ActionType): Set<Gesture> =
