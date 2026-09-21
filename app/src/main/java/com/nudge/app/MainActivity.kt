@@ -22,6 +22,7 @@ import com.nudge.app.action.ActionDispatcher
 import com.nudge.app.config.ConfigStore
 import com.nudge.app.config.NudgeConfig
 import com.nudge.app.config.PROFILE_SLOT_COUNT
+import com.nudge.app.config.ProfileShortcuts
 import com.nudge.app.config.ProfileSlot
 import com.nudge.app.lyrics.LyricsRepository
 import com.nudge.app.lyrics.LyricsState
@@ -39,6 +40,7 @@ import com.nudge.app.update.UpdateState
 import com.nudge.app.ui.theme.NudgeTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -163,7 +165,10 @@ class MainActivity : ComponentActivity() {
                                 scope.launch { configStore.setScreenPinningEnabled(it) }
                             },
                             onProfileSave = { index, name ->
-                                scope.launch { configStore.saveProfile(index, name, config) }
+                                scope.launch {
+                                    configStore.saveProfile(index, name, config)
+                                    syncProfileShortcuts()
+                                }
                             },
                             onProfileLoad = { index ->
                                 scope.launch {
@@ -178,7 +183,10 @@ class MainActivity : ComponentActivity() {
                                 }
                             },
                             onProfileDelete = { index ->
-                                scope.launch { configStore.deleteProfile(index) }
+                                scope.launch {
+                                    configStore.deleteProfile(index)
+                                    syncProfileShortcuts()
+                                }
                             },
                             onRequestPermission = {
                                 MediaControlRepository.openNotificationSettings(this@MainActivity)
@@ -299,6 +307,17 @@ class MainActivity : ComponentActivity() {
         if (!hasFocus) return
         enterImmersiveMode()
         window.decorView.excludeFromSystemGestures()
+    }
+
+    /**
+     * 让动态 shortcut 与槽位状态一致。存/删预设后调用。
+     *
+     * 从 DataStore 重新读一遍而不用 Compose 里的 profiles：那是写入前的快照，
+     * Flow 还没把新值推过来，直接用会同步出旧状态。
+     */
+    private suspend fun syncProfileShortcuts() {
+        val slots = configStore.profiles.first()
+        ProfileShortcuts.sync(this, slots)
     }
 
     /**

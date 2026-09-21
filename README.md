@@ -84,7 +84,19 @@ nudge 是一个 Android 音乐控制 app，核心场景是**盲操**——手机
 
 加载后再改配置不会写回预设——预设只在你点「覆盖」时才更新，不会被误改污染。
 
-外部自动化工具可用广播切换预设，`slot` 取 `1`/`2`/`3`：
+#### 三星「模式与日常安排」直接切换
+
+每个已保存的预设都会注册成一个快捷方式，M&R 能直接读到。在 M&R 里
+**添加动作 → 其他应用程序 → nudge**，列表里除了「打开 nudge」还会有你给预设起的名字，
+选中即可。无需 Tasker 中转，也不会把 nudge 弹到前台。
+
+空槽位不会出现在列表里。改了预设名字后，M&R 里已配置好的动作需要重新选一次。
+
+长按桌面图标也能看到同一组快捷方式。
+
+#### 广播切换
+
+给 Home Assistant、adb、以及不读快捷方式的自动化工具保留，`slot` 取 `1`/`2`/`3`：
 
 ```bash
 adb shell am broadcast -a com.nudge.app.PROFILE -p com.nudge.app --es slot 2
@@ -93,9 +105,8 @@ adb shell am broadcast -a com.nudge.app.PROFILE -p com.nudge.app --es slot 2
 空槽位和非法槽位号都不做任何操作，可用 `adb logcat -s NudgeProfileCommand` 排查。
 和媒体广播一样，nudge 界面无需保持前台。
 
-三星「模式与日常安排」不支持直接调用第三方应用的自定义动作（只能「打开应用」），
-需经 Tasker 或 MacroDroid 中转：让 M&R 的模式触发这些工具的任务，由它们发送上述广播。
 刻意不做 deep link 入口——那会把 nudge 弹到前台，开车时突然全屏触摸板并不安全。
+快捷方式走的是透明无界面 Activity，同样不改变应用可见性。
 
 ### 检查更新
 
@@ -228,7 +239,9 @@ TrackpadScreen / SettingsScreen  (Compose)
         │ MotionEvent
 GestureRecognizer  ──► Gesture         ConfigStore (DataStore)
         │                                   ▲── ProfileCodec (预设 JSON)
-        │                                   ▲── ProfileCommandReceiver ◄── Tasker / 三星模式
+        │                                   ▲── ProfileCommandReceiver ◄── 广播 (HA / adb / Tasker)
+        │                                   ▲── ProfileShortcutActivity ◄── 动态 shortcut
+        │                                   │       ▲ ProfileShortcuts.sync  (launcher / 三星 M&R)
 ActionDispatcher  ──► Vibrator
         ▲── MediaCommandReceiver ◄── HA Companion / 本机广播
         │

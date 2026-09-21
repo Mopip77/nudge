@@ -20,7 +20,9 @@ TrackpadScreen / SettingsScreen  (Compose)
         │ MotionEvent
 GestureRecognizer  ──► Gesture         ConfigStore (DataStore)
         │                                   ▲── ProfileCodec (预设 JSON)
-        │                                   ▲── ProfileCommandReceiver ◄── Tasker / 三星模式
+        │                                   ▲── ProfileCommandReceiver ◄── 广播 (HA / adb / Tasker)
+        │                                   ▲── ProfileShortcutActivity ◄── 动态 shortcut
+        │                                   │       ▲ ProfileShortcuts.sync  (launcher / 三星 M&R)
 ActionDispatcher  ──► Vibrator
         │
 MediaControlRepository ──► NotificationListenerService → MediaSessionManager
@@ -130,19 +132,58 @@ deprecated（官方推荐 `PackageInstaller` Session API），但那套要多写
 
 ### 槽位号固定 1..3，删除后不重排
 
-槽位号是广播协议的对外标识，重排会让已配置好的自动化指向别的预设。
+槽位号是对外标识——广播的 `slot` 参数与 shortcut 的 `id`（`profile_$index`）都用它，
+重排会让已配置好的自动化指向别的预设。
 同理只支持按槽位号切换，不支持按名字——名字可改，改完外部配置就断了。
 
-### 三星「模式与日常安排」需经 Tasker 中转
+### 三星「模式与日常安排」读的是动态 shortcut
 
-M&R 没有公开给第三方注册自定义动作的 API，对第三方应用只有「打开应用」。
-链路是 M&R → Tasker/MacroDroid → `com.nudge.app.PROFILE` 广播 → nudge。
+M&R 不需要任何私有 SDK，也不需要 Tasker 中转：它持有系统权限
+`ACCESS_SHORTCUTS`（launcher 枚举 shortcut 用的就是它）与
+`RESET_SHORTCUT_MANAGER_THROTTLING`，走标准 `LauncherApps` API 读第三方应用的
+shortcut，在「添加动作 → 其他应用程序」里把它们列成子动作。
+
+真机取证（Android 13 / One UI 5.1）：`dumpsys package com.samsung.android.app.routines`
+里两个权限都 `granted=true`；存两个预设后 `dumpsys shortcut` 出现两条
+`flags=0x85 [DynIc-rStr]`，`/data/system_ce/0/shortcut_service/packages/com.nudge.app.xml`
+里 title 就是用户起的预设名。
+
+所以 `ProfileShortcuts.sync` 把已保存的预设写成动态 shortcut，
+入口是 `ProfileShortcutActivity`。只为**已保存**的预设生成：
+空槽位不列，避免 M&R 里出现「点了没反应」的死项。
+
+`setDynamicShortcuts` 而非 `addDynamicShortcuts`——整组替换语义让删除预设后
+对应 shortcut 自动消失，不必单独 remove。
+
+不判断 `isRateLimitingActive()`：频率限制只作用于后台应用，而 sync 的调用时机是
+用户在设置页存/删预设，那必然是前台，且「应用进入前台」本身就会重置计数器。
+
+shortcut 的 label 用预设名字而非「槽位 N」：预设的辨识本来就全靠名字
+（这也是当初决定不显示配置摘要的理由），M&R 的动作列表里显示槽位号同样认不出来。
+代价是改名后 M&R 里已配置的动作要重选一次——可接受，`id` 仍是稳定的 `profile_$index`。
+
+#### 入口 Activity 不能用 `Theme.NoDisplay`
+
+targetSdk ≥ 23 上它会抛 `IllegalStateException`
+（"did not call finish() prior to onResume() completing"）。必须用
+`Theme.Translucent.NoTitleBar`（即 `Theme.Nudge.Invisible`），
+这也是官方与 AOSP Email 的修法。
+
+配 `excludeFromRecents` + `noHistory`，保证它不出现在最近任务里、不留栈。
+`finish()` 无条件调用且放在 try 之外——任何分支都不能留一个透明 Activity 挂在栈上。
+
+#### 广播入口保留
+
+shortcut 点击是 `startActivity` 而非广播，所以两条路径不能共用一个入口。
+广播留给不会枚举 shortcut 的工具（HA、adb），且与 `MediaCommandReceiver` 协议风格一致。
 
 刻意不做 deep link Activity：它会把应用弹到前台，而「开车时切到驾驶模式」
-这种场景下突然弹出全屏触摸板是危险的。广播不改变应用可见性。
+这种场景下突然弹出全屏触摸板是危险的。广播与透明 shortcut Activity 都不改变应用可见性
+（真机实测：应用未运行时触发 shortcut，launcher 保持在前台，最近任务里不新增条目）。
 
-`onReceive` 里用 `runBlocking` 而非异步协程：返回后进程可能立即被回收，
-异步写 DataStore 会来不及执行完。写入是毫秒级，远在 10 秒配额内。
+`onReceive` 与 `onCreate` 里都用 `runBlocking` 而非异步协程：返回后进程可能立即被回收
+（Activity 则是紧接着 finish），异步写 DataStore 会来不及执行完。写入是毫秒级，
+远在 10 秒配额内。
 
 ## 应用内更新
 
@@ -177,11 +218,29 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@17 ./gradlew test
 那会让所有未 mock 的 Android 调用静默返回 null，把真实失败一并掩盖掉（`ReleaseInfo.parse`
 的解析失败正是被它掩盖过一次）。
 
-涉及媒体控制和震动的部分没有自动化测试，需要真机验证。关键回归项：
+涉及媒体控制、震动、shortcut 的部分没有自动化测试（Activity 与 ShortcutManager
+都是 Android 框架），需要真机验证。关键回归项：
 
 - 对**已收藏**的歌重复执行收藏手势，断言 `hasHeart` 保持 true 不变（防 toggle 缺陷回归）
 - 把某动作的手势全部取消勾选 → 存成预设 → 改回有绑定 → 加载该预设 →
   断言该动作仍显示「未绑定」（防 `loadProfile` 跳过写入的缺陷回归）
+- 存两个预设后查 shortcut，断言两条都在且 title 是用户起的名字；
+  删掉一个后再查，断言只剩一条（防 sync 漏调或误用 `addDynamicShortcuts` 回归）：
+
+  ```bash
+  adb shell 'su -c "cat /data/system_ce/0/shortcut_service/packages/com.nudge.app.xml"' \
+    | tr -c '[:print:]\n' '\n' | ag -u 'profile_'
+  ```
+
+  `dumpsys shortcut` 会把 label 打成 `***`（即便有 root），要看真实文案只能读上面这个
+  落盘文件。
+- 应用**未运行**时触发 shortcut，断言 launcher 仍在前台、最近任务里不新增 nudge 条目、
+  logcat 无「did not call finish」异常：
+
+  ```bash
+  adb shell am force-stop com.nudge.app
+  adb shell am start -n com.nudge.app/.config.ProfileShortcutActivity --es slot 1
+  ```
 
 ## 发布
 

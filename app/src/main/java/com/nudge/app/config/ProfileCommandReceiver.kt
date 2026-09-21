@@ -9,11 +9,13 @@ import kotlinx.coroutines.runBlocking
 /**
  * 预设切换的广播入口，供 Tasker / MacroDroid / Home Assistant / adb 调用。
  *
- * 三星「模式与日常安排」没有公开给第三方注册自定义动作的 API，对第三方应用只有
- * 「打开应用」，所以链路是 M&R → Tasker → 本广播。
+ * 三星「模式与日常安排」不需要走这里，它直接读动态 shortcut
+ * （见 [ProfileShortcuts]）。本广播保留给不会枚举 shortcut 的自动化工具，
+ * 且与 [com.nudge.app.action.MediaCommandReceiver] 的协议风格一致。
  *
- * 不做 deep link Activity：它会把应用弹到前台，而「开车时 M&R 切到驾驶模式」
+ * 不做 deep link Activity：它会把应用弹到前台，而「开车时切到驾驶模式」
  * 这种场景下突然弹出全屏触摸板是危险的。广播不改变应用的可见性。
+ * shortcut 入口用的是透明无界面 Activity，同样不改变可见性。
  *
  * 静态注册让界面未打开时也能接收。
  */

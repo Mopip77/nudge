@@ -1,4 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <style name="Theme.Nudge" parent="android:Theme.Material.NoActionBar" />
+
+    <!-- shortcut 入口 Activity 用：onCreate 里做完事就 finish，用户看不到任何界面。
+         刻意不用 android:Theme.NoDisplay——targetSdk ≥ 23 上它会抛
+         IllegalStateException（"did not call finish() prior to onResume() completing"）。
+         Translucent 从根上避开这类崩溃，也是官方推荐的替代路径。 -->
+    <style name="Theme.Nudge.Invisible" parent="android:Theme.Translucent.NoTitleBar" />
 </resources>

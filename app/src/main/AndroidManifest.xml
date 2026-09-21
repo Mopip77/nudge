@@ -25,6 +25,16 @@
             </intent-filter>
         </activity>
 
+        <!-- 预设切换的 shortcut 入口。exported 是必须的——shortcut 由系统 launcher
+             或三星「模式与日常安排」代为启动。
+             excludeFromRecents + noHistory 保证它不出现在最近任务里、不留栈。 -->
+        <activity
+            android:name=".config.ProfileShortcutActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@style/Theme.Nudge.Invisible" />
+
         <!-- 下载好的 APK 在私有目录里，安装器是另一个进程，必须靠 FileProvider
              换成 content:// 才读得到 -->
         <provider
@@ -46,7 +56,8 @@
             </intent-filter>
         </receiver>
 
-        <!-- 预设切换。三星「模式与日常安排」经 Tasker 中转调用，无需前台界面。 -->
+        <!-- 预设切换的广播入口，供 Tasker / Home Assistant / adb 调用，无需前台界面。
+             三星「模式与日常安排」不走这里，它直接读上面那个 Activity 的动态 shortcut。 -->
         <receiver
             android:name=".config.ProfileCommandReceiver"
             android:exported="true">
