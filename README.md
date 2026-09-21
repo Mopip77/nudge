@@ -27,6 +27,7 @@ nudge 是一个 Android 音乐控制 app，核心场景是**盲操**——手机
 - **实时歌词** — Apple Music 观感的滚动歌词，景深模糊 + 边缘淡出，可关闭
 - **三档灵敏度** — 在「容易触发」和「不易误触」之间按手感选择
 - **手势可改绑** — 五种手势自由绑定到动作，冲突时有提示
+- **配置预设** — 把全部配置存成最多三个命名预设，可一键切回，也能由外部自动化切换
 - **Home Assistant 联动** — 通过 Companion 广播调用切歌、播放/暂停和点赞，无需 root
 
 首版支持两个动作：**下一首** 和 **网易云收藏（红心）**。
@@ -71,6 +72,30 @@ nudge 是一个 Android 音乐控制 app，核心场景是**盲操**——手机
 ### 灵敏度
 
 三档（宽松 / 标准 / 严格），调整双击间隔、多指同时性窗口、移动容差等阈值。越严格越难误触，也越难触发。默认标准档。
+
+### 配置预设
+
+设置页顶部的**预设**区块有三个槽位，每个槽位保存一份完整配置（手势绑定、灵敏度、
+主题、歌词开关、固定屏幕），可自定义名字。
+
+- **保存 / 覆盖** — 把当前配置写入槽位。覆盖已有预设需二次确认
+- **加载** — 用预设覆盖当前配置，立即生效
+- **删除** — 清空槽位，需二次确认
+
+加载后再改配置不会写回预设——预设只在你点「覆盖」时才更新，不会被误改污染。
+
+外部自动化工具可用广播切换预设，`slot` 取 `1`/`2`/`3`：
+
+```bash
+adb shell am broadcast -a com.nudge.app.PROFILE -p com.nudge.app --es slot 2
+```
+
+空槽位和非法槽位号都不做任何操作，可用 `adb logcat -s NudgeProfileCommand` 排查。
+和媒体广播一样，nudge 界面无需保持前台。
+
+三星「模式与日常安排」不支持直接调用第三方应用的自定义动作（只能「打开应用」），
+需经 Tasker 或 MacroDroid 中转：让 M&R 的模式触发这些工具的任务，由它们发送上述广播。
+刻意不做 deep link 入口——那会把 nudge 弹到前台，开车时突然全屏触摸板并不安全。
 
 ### 检查更新
 
@@ -202,7 +227,8 @@ export JAVA_HOME=/opt/homebrew/opt/openjdk@17   # 按你的实际路径改
 TrackpadScreen / SettingsScreen  (Compose)
         │ MotionEvent
 GestureRecognizer  ──► Gesture         ConfigStore (DataStore)
-        │
+        │                                   ▲── ProfileCodec (预设 JSON)
+        │                                   ▲── ProfileCommandReceiver ◄── Tasker / 三星模式
 ActionDispatcher  ──► Vibrator
         ▲── MediaCommandReceiver ◄── HA Companion / 本机广播
         │

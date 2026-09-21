@@ -19,7 +19,8 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@17 ./gradlew assembleDebug
 TrackpadScreen / SettingsScreen  (Compose)
         │ MotionEvent
 GestureRecognizer  ──► Gesture         ConfigStore (DataStore)
-        │
+        │                                   ▲── ProfileCodec (预设 JSON)
+        │                                   ▲── ProfileCommandReceiver ◄── Tasker / 三星模式
 ActionDispatcher  ──► Vibrator
         │
 MediaControlRepository ──► NotificationListenerService → MediaSessionManager
@@ -110,6 +111,39 @@ deprecated（官方推荐 `PackageInstaller` Session API），但那套要多写
 `windowInsetsPadding(WindowInsets.safeDrawing)`。用 `safeDrawing` 而非 `statusBars`——
 系统栏此时本就是隐藏的，真正要避的是切口。
 
+## 配置预设
+
+三个固定槽位，每个存一份完整 `NudgeConfig` 快照 + 名字，JSON 序列化进 DataStore
+的 `profile_1/2/3`。编解码在 `ProfileCodec`，纯 Kotlin 无 Android 依赖，可 JVM 单测。
+
+### 加载预设必须全量写入
+
+`loadProfile` 要把五个配置项**全部**写进 DataStore，包括值等于默认值的项，
+不能做「等于默认就不写」的优化。`bindings` 的读取侧口径是「没写过 key 才回落默认，
+写过空串表示用户主动清空」——跳过写入会把用户存的空绑定静默恢复成默认绑定。
+
+### 不记录「当前预设」
+
+加载是一次性覆写，之后改配置与来源预设再无关系，三个槽位没有「选中」态。
+若记录 activeProfile 并在改配置时自动写回，盲操下用户改了灵敏度就会静默污染存档，
+和收藏那条 toggle 缺陷是同一类问题。「覆盖」是唯一的写回路径，且带二次确认。
+
+### 槽位号固定 1..3，删除后不重排
+
+槽位号是广播协议的对外标识，重排会让已配置好的自动化指向别的预设。
+同理只支持按槽位号切换，不支持按名字——名字可改，改完外部配置就断了。
+
+### 三星「模式与日常安排」需经 Tasker 中转
+
+M&R 没有公开给第三方注册自定义动作的 API，对第三方应用只有「打开应用」。
+链路是 M&R → Tasker/MacroDroid → `com.nudge.app.PROFILE` 广播 → nudge。
+
+刻意不做 deep link Activity：它会把应用弹到前台，而「开车时切到驾驶模式」
+这种场景下突然弹出全屏触摸板是危险的。广播不改变应用可见性。
+
+`onReceive` 里用 `runBlocking` 而非异步协程：返回后进程可能立即被回收，
+异步写 DataStore 会来不及执行完。写入是毫秒级，远在 10 秒配额内。
+
 ## 应用内更新
 
 设置页手动触发，不做启动自动检查——这是刻意的，盲操工具不该在启动时弹更新提示。
@@ -134,14 +168,20 @@ deprecated（官方推荐 `PackageInstaller` Session API），但那套要多写
 JAVA_HOME=/opt/homebrew/opt/openjdk@17 ./gradlew test
 ```
 
-75 个单元测试，主体在 `GestureRecognizer`——正例（五种手势 × 三档灵敏度）、边界（阈值临界）、负例（滑动、指数不符、超时）。**动手势逻辑必须补相应测试**，尤其是防误触的负例。
+92 个单元测试，主体在 `GestureRecognizer`——正例（五种手势 × 三档灵敏度）、边界（阈值临界）、负例（滑动、指数不符、超时）。**动手势逻辑必须补相应测试**，尤其是防误触的负例。
+
+预设部分由 `ProfileCodecTest` 覆盖 round-trip 与宽容解码，`ProfileSlotTest` 覆盖槽位号解析。
 
 `org.json` 在 JVM 单测里只有会抛「not mocked」的桩实现，所以 `build.gradle.kts` 里额外引了
 `org.json:json` 作为 testImplementation 覆盖掉它。**不要改用 `returnDefaultValues = true`**——
 那会让所有未 mock 的 Android 调用静默返回 null，把真实失败一并掩盖掉（`ReleaseInfo.parse`
 的解析失败正是被它掩盖过一次）。
 
-涉及媒体控制和震动的部分没有自动化测试，需要真机验证。关键回归项：对**已收藏**的歌重复执行收藏手势，断言 `hasHeart` 保持 true 不变（防 toggle 缺陷回归）。
+涉及媒体控制和震动的部分没有自动化测试，需要真机验证。关键回归项：
+
+- 对**已收藏**的歌重复执行收藏手势，断言 `hasHeart` 保持 true 不变（防 toggle 缺陷回归）
+- 把某动作的手势全部取消勾选 → 存成预设 → 改回有绑定 → 加载该预设 →
+  断言该动作仍显示「未绑定」（防 `loadProfile` 跳过写入的缺陷回归）
 
 ## 发布
 
