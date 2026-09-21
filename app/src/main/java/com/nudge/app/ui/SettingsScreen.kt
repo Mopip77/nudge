@@ -41,6 +41,7 @@ fun SettingsScreen(
     onBindingRemove: (ActionType, Gesture) -> Unit,
     onSensitivityChange: (Sensitivity) -> Unit,
     onThemeChange: (ThemeMode) -> Unit,
+    onLyricsEnabledChange: (Boolean) -> Unit,
     onRequestPermission: () -> Unit,
     onBack: () -> Unit,
 ) {
@@ -126,6 +127,15 @@ fun SettingsScreen(
                 onClick = { onSensitivityChange(s) },
             )
         }
+
+        SectionTitle("歌词")
+        OptionRow(
+            label = "显示歌词",
+            hint = "关闭后不再请求歌词，仅显示曲目信息",
+            selected = config.lyricsEnabled,
+            multiSelect = true,
+            onClick = { onLyricsEnabledChange(!config.lyricsEnabled) },
+        )
 
         SectionTitle("主题")
         ThemeMode.entries.forEach { mode ->

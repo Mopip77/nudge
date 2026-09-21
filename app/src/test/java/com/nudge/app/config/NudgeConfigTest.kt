@@ -12,6 +12,7 @@ class NudgeConfigTest {
         bindings = bindings,
         sensitivity = Sensitivity.STANDARD,
         themeMode = ThemeMode.SYSTEM,
+        lyricsEnabled = true,
     )
 
     @Test

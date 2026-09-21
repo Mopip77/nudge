@@ -83,9 +83,12 @@ class MainActivity : ComponentActivity() {
 
             // 歌曲变化时重新拉歌词。以 mediaId 为 key，切歌会自动取消上一次
             // 未完成的请求，避免旧歌词错配到新歌上。
+            //
+            // lyricsEnabled 也作为 key：关闭时不仅隐藏 UI，还要连网络请求一起省掉；
+            // 重新打开时该 effect 重启，立刻补拉当前歌曲的歌词而不必等切歌。
             val mediaId = track?.mediaId
-            LaunchedEffect(mediaId) {
-                lyricsState = if (mediaId.isNullOrBlank()) {
+            LaunchedEffect(mediaId, config.lyricsEnabled) {
+                lyricsState = if (mediaId.isNullOrBlank() || !config.lyricsEnabled) {
                     LyricsState.Idle
                 } else {
                     LyricsState.Loading
@@ -115,6 +118,9 @@ class MainActivity : ComponentActivity() {
                             },
                             onThemeChange = {
                                 scope.launch { configStore.setThemeMode(it) }
+                            },
+                            onLyricsEnabledChange = {
+                                scope.launch { configStore.setLyricsEnabled(it) }
                             },
                             onRequestPermission = {
                                 MediaControlRepository.openNotificationSettings(this@MainActivity)

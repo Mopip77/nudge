@@ -3,6 +3,7 @@ package com.nudge.app.config
 import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -32,6 +33,8 @@ data class NudgeConfig(
     val bindings: Map<ActionType, Set<Gesture>>,
     val sensitivity: Sensitivity,
     val themeMode: ThemeMode,
+    /** 关闭后既不显示歌词，也不发起歌词网络请求。 */
+    val lyricsEnabled: Boolean,
 ) {
     /** 反查：某手势绑定到了哪个动作。未绑定返回 null。 */
     fun gestureToAction(gesture: Gesture): ActionType? =
@@ -45,6 +48,7 @@ data class NudgeConfig(
             ),
             sensitivity = Sensitivity.STANDARD,
             themeMode = ThemeMode.SYSTEM,
+            lyricsEnabled = true,
         )
     }
 }
@@ -81,6 +85,7 @@ class ConfigStore(private val context: Context) {
             themeMode = prefs[THEME_KEY]
                 ?.let { name -> ThemeMode.entries.firstOrNull { it.name == name } }
                 ?: NudgeConfig.DEFAULT.themeMode,
+            lyricsEnabled = prefs[LYRICS_ENABLED_KEY] ?: NudgeConfig.DEFAULT.lyricsEnabled,
         )
     }
 
@@ -113,9 +118,14 @@ class ConfigStore(private val context: Context) {
         context.dataStore.edit { it[THEME_KEY] = mode.name }
     }
 
+    suspend fun setLyricsEnabled(enabled: Boolean) {
+        context.dataStore.edit { it[LYRICS_ENABLED_KEY] = enabled }
+    }
+
     private companion object {
         val SENSITIVITY_KEY = stringPreferencesKey("sensitivity")
         val THEME_KEY = stringPreferencesKey("theme_mode")
+        val LYRICS_ENABLED_KEY = booleanPreferencesKey("lyrics_enabled")
         fun bindingKey(action: ActionType) = stringPreferencesKey("binding_${action.name}")
 
         /** 写入侧必须和读取侧用同一套回落规则，否则改 A 会把未写过的 B 悄悄重置成空。 */
