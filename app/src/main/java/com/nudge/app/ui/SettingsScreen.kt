@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.nudge.app.config.ActionType
 import com.nudge.app.config.NudgeConfig
+import com.nudge.app.config.ProfileSlot
 import com.nudge.app.config.ThemeMode
 import com.nudge.app.gesture.Gesture
 import com.nudge.app.gesture.Sensitivity
@@ -45,6 +46,7 @@ import com.nudge.app.update.UpdateState
 @Composable
 fun SettingsScreen(
     config: NudgeConfig,
+    profiles: List<ProfileSlot>,
     hasPermission: Boolean,
     onBindingAdd: (ActionType, Gesture) -> Unit,
     onBindingRemove: (ActionType, Gesture) -> Unit,
@@ -52,6 +54,9 @@ fun SettingsScreen(
     onThemeChange: (ThemeMode) -> Unit,
     onLyricsEnabledChange: (Boolean) -> Unit,
     onScreenPinningChange: (Boolean) -> Unit,
+    onProfileSave: (Int, String) -> Unit,
+    onProfileLoad: (Int) -> Unit,
+    onProfileDelete: (Int) -> Unit,
     onRequestPermission: () -> Unit,
     currentVersion: String,
     updateState: UpdateState,
@@ -109,6 +114,14 @@ fun SettingsScreen(
                 }
             }
         }
+
+        // 放在最前：加载预设会改掉下面所有区块的显示，符合「因在前、果在后」的阅读顺序
+        ProfileSection(
+            slots = profiles,
+            onSave = onProfileSave,
+            onLoad = onProfileLoad,
+            onDelete = onProfileDelete,
+        )
 
         // 一个动作可绑多个手势（多选），反向的互斥——一个手势只属于一个动作——
         // 由 ConfigStore.addBinding 的抢占保证，勾给新动作时会从原动作自动移除。
@@ -359,7 +372,7 @@ private fun formatSize(bytes: Long): String = when {
 }
 
 @Composable
-private fun SectionTitle(text: String) {
+internal fun SectionTitle(text: String) {
     Text(
         text = text,
         fontSize = 13.sp,

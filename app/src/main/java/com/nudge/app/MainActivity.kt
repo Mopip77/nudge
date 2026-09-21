@@ -21,6 +21,8 @@ import androidx.compose.ui.ExperimentalComposeUiApi
 import com.nudge.app.action.ActionDispatcher
 import com.nudge.app.config.ConfigStore
 import com.nudge.app.config.NudgeConfig
+import com.nudge.app.config.PROFILE_SLOT_COUNT
+import com.nudge.app.config.ProfileSlot
 import com.nudge.app.lyrics.LyricsRepository
 import com.nudge.app.lyrics.LyricsState
 import com.nudge.app.media.ActionResult
@@ -80,6 +82,10 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             val config by configStore.config.collectAsState(initial = NudgeConfig.DEFAULT)
+            // 初值是三个空槽而非 emptyList()，否则首帧区块空白、随后才跳出三行
+            val profiles by configStore.profiles.collectAsState(
+                initial = (1..PROFILE_SLOT_COUNT).map { ProfileSlot(it, null, null) }
+            )
             val scope = rememberCoroutineScope()
             var showSettings by remember { mutableStateOf(false) }
             var track by remember { mutableStateOf<TrackInfo?>(null) }
@@ -136,6 +142,7 @@ class MainActivity : ComponentActivity() {
                         BackHandler { showSettings = false }
                         SettingsScreen(
                             config = config,
+                            profiles = profiles,
                             hasPermission = hasPermission,
                             onBindingAdd = { action, gesture ->
                                 scope.launch { configStore.addBinding(action, gesture) }
@@ -154,6 +161,24 @@ class MainActivity : ComponentActivity() {
                             },
                             onScreenPinningChange = {
                                 scope.launch { configStore.setScreenPinningEnabled(it) }
+                            },
+                            onProfileSave = { index, name ->
+                                scope.launch { configStore.saveProfile(index, name, config) }
+                            },
+                            onProfileLoad = { index ->
+                                scope.launch {
+                                    val loaded = configStore.loadProfile(index)
+                                    if (loaded != null) {
+                                        Toast.makeText(
+                                            this@MainActivity,
+                                            "已加载「${loaded.name}」",
+                                            Toast.LENGTH_SHORT,
+                                        ).show()
+                                    }
+                                }
+                            },
+                            onProfileDelete = { index ->
+                                scope.launch { configStore.deleteProfile(index) }
                             },
                             onRequestPermission = {
                                 MediaControlRepository.openNotificationSettings(this@MainActivity)
