@@ -360,14 +360,23 @@ private fun LyricRow(
                 // 实测表现为当前行首尾字被裁掉（「Dancing with my phone」的 D 和 e 都没了）。
                 // 收窄后排版宽度 × scale 正好回到 20dp 边距。
                 .padding(horizontal = animatedSidePadding, vertical = 6.dp)
-                // blur 必须在 graphicsLayer 之前：模糊作用于已绘制内容，
-                // 放在后面会先被 alpha 压暗再模糊，远处行几乎看不见
-                .blur(animatedBlur)
+                // scale 必须在 blur 之前：blur 默认的 BlurredEdgeTreatment.Rectangle
+                // 会 clip=true 硬裁到排版矩形（见 Compose BlurNode: `clip = maskShape != null`）。
+                // 放在 blur 之后，裁切发生在放大前的窄矩形上，放大的只是已经被切掉首尾的结果——
+                // 表现为当前行里恰好排满整行的那一折行左右各少一个字，而没排满的折行完好。
+                // 上面的 sidePadding 补偿只管在屏幕上留出放大后的位置，管不了这一刀。
                 .graphicsLayer {
-                    this.alpha = animatedAlpha
                     scaleX = animatedScale
                     scaleY = animatedScale
-                },
+                }
+                // 零半径时不要挂 blur：BlurNode 无论半径多少都照样 clip=true，
+                // 当前行半径恒为 0，挂着只会白白引入一个裁切边界。
+                .then(
+                    if (animatedBlur > 0.dp) Modifier.blur(animatedBlur) else Modifier
+                )
+                // alpha 必须在 blur 之后（即更内层）：模糊作用于已绘制内容，
+                // 反过来会先被 alpha 压暗再模糊，远处行几乎看不见
+                .graphicsLayer { this.alpha = animatedAlpha },
         )
     }
 }
