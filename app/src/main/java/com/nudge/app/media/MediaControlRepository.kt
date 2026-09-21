@@ -94,15 +94,46 @@ class MediaControlRepository(private val context: Context) {
             ?.getRating(MediaMetadata.METADATA_KEY_USER_RATING)
             ?.hasHeart() == true
 
-    fun skipNext(): ActionResult {
-        val controller = skipTargetController()
+    fun skipNext(): ActionResult = execute(MediaCommand.NEXT)
+
+    fun execute(command: MediaCommand): ActionResult {
+        if (command == MediaCommand.LIKE) return like()
+        val keyCode = when (command) {
+            MediaCommand.NEXT -> KeyEvent.KEYCODE_MEDIA_NEXT
+            MediaCommand.PREVIOUS -> KeyEvent.KEYCODE_MEDIA_PREVIOUS
+            MediaCommand.PLAY -> KeyEvent.KEYCODE_MEDIA_PLAY
+            MediaCommand.PAUSE -> KeyEvent.KEYCODE_MEDIA_PAUSE
+            MediaCommand.PLAY_PAUSE -> KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE
+            MediaCommand.LIKE -> error("收藏使用独立入口")
+        }
+        val result = if (command == MediaCommand.NEXT || command == MediaCommand.PREVIOUS) {
+            ActionResult.Skipped
+        } else {
+            ActionResult.PlaybackCommandSent
+        }
+        // 恢复其他播放器时要能找到暂停的会话，同时维持网易云、正在播放会话的优先级。
+        val controller = skipTargetController() ?: if (
+            command == MediaCommand.PLAY || command == MediaCommand.PLAY_PAUSE
+        ) sessions().firstOrNull { it.playbackState?.state == PlaybackState.STATE_PAUSED } else null
         if (controller != null) {
-            controller.transportControls.skipToNext()
-            return ActionResult.Skipped
+            when (command) {
+                MediaCommand.NEXT -> controller.transportControls.skipToNext()
+                MediaCommand.PREVIOUS -> controller.transportControls.skipToPrevious()
+                MediaCommand.PLAY -> controller.transportControls.play()
+                MediaCommand.PAUSE -> controller.transportControls.pause()
+                MediaCommand.PLAY_PAUSE -> {
+                    // 让播放器自己判断切换方向，避免读取尚未更新的状态后做出错误决定。
+                    val down = controller.dispatchMediaButtonEvent(KeyEvent(KeyEvent.ACTION_DOWN, keyCode))
+                    val up = controller.dispatchMediaButtonEvent(KeyEvent(KeyEvent.ACTION_UP, keyCode))
+                    if (!down || !up) return ActionResult.Failed("播放器未接受媒体按键")
+                }
+                MediaCommand.LIKE -> error("收藏使用独立入口")
+            }
+            return result
         }
         // 回退：无通知使用权时用媒体按键，零权限但无法指定目标
-        return if (dispatchMediaKey(KeyEvent.KEYCODE_MEDIA_NEXT)) {
-            ActionResult.Skipped
+        return if (dispatchMediaKey(keyCode)) {
+            result
         } else {
             ActionResult.NoSession
         }

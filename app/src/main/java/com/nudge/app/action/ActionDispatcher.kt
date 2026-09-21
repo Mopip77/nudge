@@ -9,6 +9,7 @@ import com.nudge.app.config.ActionType
 import com.nudge.app.config.NudgeConfig
 import com.nudge.app.gesture.Gesture
 import com.nudge.app.media.ActionResult
+import com.nudge.app.media.MediaCommand
 import com.nudge.app.media.MediaControlRepository
 
 /**
@@ -32,17 +33,27 @@ class ActionDispatcher(
     /** 执行手势对应的动作。手势未绑定任何动作时返回 null。 */
     fun dispatch(gesture: Gesture, config: NudgeConfig): ActionResult? {
         val action = config.gestureToAction(gesture) ?: return null
-        val result = when (action) {
-            ActionType.NEXT_TRACK -> repository.skipNext()
-            ActionType.LIKE -> repository.like()
-        }
+        return dispatch(action)
+    }
+
+    /** 外部广播和手势共用动作及反馈，不受手势绑定配置影响。 */
+    fun dispatch(action: ActionType): ActionResult {
+        return dispatch(when (action) {
+            ActionType.NEXT_TRACK -> MediaCommand.NEXT
+            ActionType.LIKE -> MediaCommand.LIKE
+        })
+    }
+
+    fun dispatch(command: MediaCommand): ActionResult {
+        val result = repository.execute(command)
         vibrateFor(result)
         return result
     }
 
     private fun vibrateFor(result: ActionResult) {
         val effect = when (result) {
-            ActionResult.Skipped -> VibrationEffect.createOneShot(50, DEFAULT_AMPLITUDE)
+            ActionResult.Skipped, ActionResult.PlaybackCommandSent ->
+                VibrationEffect.createOneShot(50, DEFAULT_AMPLITUDE)
             ActionResult.Liked -> VibrationEffect.createWaveform(
                 longArrayOf(0, 30, 80, 30), -1
             )

@@ -37,6 +37,15 @@
                 android:resource="@xml/file_paths" />
         </provider>
 
+        <!-- Companion 与自动化工具通过指定包名的广播调用，无需前台界面。 -->
+        <receiver
+            android:name=".action.MediaCommandReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.nudge.app.MEDIA" />
+            </intent-filter>
+        </receiver>
+
         <service
             android:name=".media.NudgeNotificationListener"
             android:exported="true"

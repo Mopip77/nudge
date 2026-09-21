@@ -27,6 +27,7 @@ nudge 是一个 Android 音乐控制 app，核心场景是**盲操**——手机
 - **实时歌词** — Apple Music 观感的滚动歌词，景深模糊 + 边缘淡出，可关闭
 - **三档灵敏度** — 在「容易触发」和「不易误触」之间按手感选择
 - **手势可改绑** — 五种手势自由绑定到动作，冲突时有提示
+- **Home Assistant 联动** — 通过 Companion 广播调用切歌、播放/暂停和点赞，无需 root
 
 首版支持两个动作：**下一首** 和 **网易云收藏（红心）**。
 
@@ -77,6 +78,95 @@ nudge 是一个 Android 音乐控制 app，核心场景是**盲操**——手机
 
 只在手动点击时检查，启动时不会打扰。首次更新需要在系统弹出的页面里给 nudge 开启「安装未知应用」权限。
 
+### Home Assistant 调用
+
+链路：HA → 安卓 Companion → nudge → 音乐播放器。使用 Companion 官方支持的
+[`command_broadcast_intent`](https://companion.home-assistant.io/docs/notifications/notification-commands/#broadcast-intent)。
+安装支持此入口的 nudge 版本后先打开一次，并授予 nudge **通知使用权**；播放音乐后即可调用，nudge 界面无需保持前台。
+系统设置里的「强行停止」会阻止广播接收，需要重新打开 nudge。
+
+下一首（将 `notify.mobile_app_s20` 换成你的手机通知服务）：
+
+```yaml
+action: notify.mobile_app_s20
+data:
+  message: command_broadcast_intent
+  data:
+    intent_package_name: com.nudge.app
+    intent_action: com.nudge.app.MEDIA
+    intent_extras: "command:next"
+```
+
+点赞当前网易云歌曲：
+
+```yaml
+action: notify.mobile_app_s20
+data:
+  message: command_broadcast_intent
+  data:
+    intent_package_name: com.nudge.app
+    intent_action: com.nudge.app.MEDIA
+    intent_extras: "command:like"
+```
+
+广播支持以下命令，只需替换 `intent_extras` 中 `command:` 后的值：
+
+| 命令 | 动作 |
+|---|---|
+| `next` | 下一首 |
+| `previous` | 上一首 |
+| `play` | 播放 / 恢复播放 |
+| `pause` | 暂停 |
+| `play_pause` | 播放和暂停之间切换 |
+| `like` | 网易云点赞，已收藏时不取消 |
+
+播放控制成功发送后短震一次。播放和切换操作在没有网易云、也没有正在播放的会话时，
+会尝试暂停中的其他播放器。自动化中需要确定状态时使用 `play` 或 `pause`；
+`play_pause` 每次切换一次，重复请求会再次切换。
+
+`next` 和 `like` 复用手势动作及震动反馈，不受手势改绑影响。`like` 会先检查红心，已收藏时不操作，
+不会主动取消收藏；下一首优先网易云，无网易云会话时控制正在播放的其他应用。
+没有通知使用权时播放控制仍可尝试完整媒体按键，点赞不可用。未知或缺失的 `command` 会被忽略。
+
+这是对本机应用开放的广播入口，其他应用也能调用这些固定动作。HA 的发送结果仅表示命令发送，
+不代表播放器已完成操作；可通过震动、播放器状态或 `adb logcat -s NudgeMediaCommand` 排查。
+日志里的 `Skipped` / `Liked` / `PlaybackCommandSent` 表示已向播放器发出操作，未等待播放器确认。
+
+本地验证可使用相同的包名限定广播：
+
+```bash
+adb shell am broadcast -a com.nudge.app.MEDIA -p com.nudge.app --es command next
+adb shell am broadcast -a com.nudge.app.MEDIA -p com.nudge.app --es command like
+```
+
+### 从电脑通过 HA API 快速调用
+
+使用 HA REST API，将 `Bearer ` 后补上自己的 token，并替换 HA 地址和手机服务名。
+
+下一首：
+
+```bash
+curl --fail-with-body -X POST 'https://your-ha.example.com/api/services/notify/mobile_app_s20' \
+  -H 'Authorization: Bearer ' \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"command_broadcast_intent","data":{"intent_package_name":"com.nudge.app","intent_action":"com.nudge.app.MEDIA","intent_extras":"command:next","priority":"high","ttl":0}}'
+```
+
+点赞：
+
+```bash
+curl --fail-with-body -X POST 'https://your-ha.example.com/api/services/notify/mobile_app_s20' \
+  -H 'Authorization: Bearer ' \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"command_broadcast_intent","data":{"intent_package_name":"com.nudge.app","intent_action":"com.nudge.app.MEDIA","intent_extras":"command:like","priority":"high","ttl":0}}'
+```
+
+上一首、播放/暂停切换可沿用同一 curl，将 `intent_extras` 分别改为
+`command:previous`、`command:play_pause`；明确播放或暂停用 `command:play`、`command:pause`。
+
+日常调用无需 USB 或 ADB。API 成功响应仅代表 HA 接受调用，播放器执行结果需在手机端确认。
+`ttl: 0` 避免离线命令积压后执行；请求超时时先检查手机状态，避免重试导致连跳两首。
+
 ## 兼容性
 
 | 功能 | 支持范围 |
@@ -114,6 +204,7 @@ TrackpadScreen / SettingsScreen  (Compose)
 GestureRecognizer  ──► Gesture         ConfigStore (DataStore)
         │
 ActionDispatcher  ──► Vibrator
+        ▲── MediaCommandReceiver ◄── HA Companion / 本机广播
         │
 MediaControlRepository ──► NotificationListenerService → MediaSessionManager
                            回退: AudioManager.dispatchMediaKeyEvent

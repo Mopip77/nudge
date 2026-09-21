@@ -51,6 +51,8 @@ fun formatDuration(ms: Long): String {
 
 /** 动作执行结果，决定震动反馈模式与 UI 提示。 */
 sealed interface ActionResult {
+    /** 播放控制已发送，播放器实际状态异步更新。 */
+    data object PlaybackCommandSent : ActionResult
     /** 切歌成功 */
     data object Skipped : ActionResult
     /** 新点亮红心 */
