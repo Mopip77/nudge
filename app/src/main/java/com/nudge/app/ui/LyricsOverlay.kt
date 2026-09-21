@@ -10,12 +10,14 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -203,16 +205,30 @@ fun LyricsOverlay(
 
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
-            // graphicsLayer 的位移走绘制阶段，不触发重组
-            modifier = Modifier.fillMaxWidth().graphicsLayer { translationY = offsetY }
+            modifier = Modifier
+                .fillMaxWidth()
+                // 必须解除父容器的高度上限：Column 默认被 BoxWithConstraints 的
+                // maxHeight 卡住，撑满后剩下的行会被压成 0 高度——表现为当前行
+                // 下方空出一片，行其实渲染了但没有尺寸。窗口整体本来就比容器高
+                // （要靠 translationY 滚动），这里让它按内容自然展开，
+                // 超出的部分由外层 clipToBounds 裁掉。
+                .wrapContentHeight(align = Alignment.Top, unbounded = true)
+                // graphicsLayer 的位移走绘制阶段，不触发重组
+                .graphicsLayer { translationY = offsetY }
         ) {
             for (index in windowStart..windowEnd) {
-                LyricRow(
-                    text = lines[index].text,
-                    isCurrent = index == currentIndex,
-                    distance = kotlin.math.abs(index - anchorIndex),
-                    onHeightMeasured = { rowHeights[index] = it },
-                )
+                // key 必须绑到绝对行号：窗口滑动时 Compose 默认按位置复用
+                // composable，onHeightMeasured 的 lambda 会继续捕获旧 index，
+                // 把实测高度写进错误的 key，导致 rowHeights 永远读不到有效值、
+                // 位移退化成 LINE_HEIGHT 估算，折行歌词下方因此空出一片。
+                key(index) {
+                    LyricRow(
+                        text = lines[index].text,
+                        isCurrent = index == currentIndex,
+                        distance = kotlin.math.abs(index - anchorIndex),
+                        onHeightMeasured = { rowHeights[index] = it },
+                    )
+                }
             }
         }
     }
