@@ -24,11 +24,16 @@ import com.nudge.app.media.MediaControlRepository
 import com.nudge.app.media.TrackInfo
 import com.nudge.app.ui.SettingsScreen
 import com.nudge.app.ui.TrackpadScreen
+import com.nudge.app.update.ApkDownloader
+import com.nudge.app.update.UpdateChecker
+import com.nudge.app.update.UpdateInstaller
+import com.nudge.app.update.UpdateState
 import com.nudge.app.ui.theme.NudgeTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 
 /**
  * 动作执行后延迟多久再读取播放状态。
@@ -62,6 +67,7 @@ class MainActivity : ComponentActivity() {
             var track by remember { mutableStateOf<TrackInfo?>(null) }
             var hasPermission by remember { mutableStateOf(repository.hasNotificationAccess()) }
             var lyricsState by remember { mutableStateOf<LyricsState>(LyricsState.Idle) }
+            var updateState by remember { mutableStateOf<UpdateState>(UpdateState.Idle) }
 
             // 轮询播放状态。MediaController 回调需要绑定/解绑生命周期管理，
             // 而本应用是前台短时使用，1 秒轮询更简单且开销可忽略。
@@ -125,6 +131,54 @@ class MainActivity : ComponentActivity() {
                             onRequestPermission = {
                                 MediaControlRepository.openNotificationSettings(this@MainActivity)
                             },
+                            currentVersion = BuildConfig.VERSION_NAME,
+                            updateState = updateState,
+                            onCheckUpdate = {
+                                updateState = UpdateState.Checking
+                                scope.launch {
+                                    val latest = withContext(Dispatchers.IO) {
+                                        UpdateChecker.fetchLatest()
+                                    }
+                                    updateState = when {
+                                        latest == null -> UpdateState.CheckFailed
+                                        UpdateChecker.hasUpdate(BuildConfig.VERSION_NAME, latest) ->
+                                            UpdateState.Available(latest)
+                                        else -> UpdateState.UpToDate
+                                    }
+                                }
+                            },
+                            onDownloadUpdate = { release ->
+                                updateState = UpdateState.Downloading(release, 0, release.apkSize)
+                                scope.launch {
+                                    val file = withContext(Dispatchers.IO) {
+                                        ApkDownloader.download(
+                                            this@MainActivity,
+                                            release,
+                                        ) { downloaded ->
+                                            // 下载循环在 IO 线程，回调里切回主线程改状态
+                                            scope.launch(Dispatchers.Main) {
+                                                updateState = UpdateState.Downloading(
+                                                    release,
+                                                    downloaded,
+                                                    release.apkSize,
+                                                )
+                                            }
+                                        }
+                                    }
+                                    updateState = if (file == null) {
+                                        UpdateState.DownloadFailed(release)
+                                    } else {
+                                        startInstall(file)
+                                        UpdateState.Downloaded(release)
+                                    }
+                                }
+                            },
+                            onInstallUpdate = { release ->
+                                // 「重新安装」走的是已下载好的包，不必重新下载
+                                startInstall(
+                                    ApkDownloader.apkFile(this@MainActivity, release.versionName)
+                                )
+                            },
                             onBack = { showSettings = false },
                         )
                     } else {
@@ -162,6 +216,21 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
+        }
+    }
+
+    /**
+     * 拉起系统安装器，没有「安装未知应用」授权时先把用户送去设置页。
+     *
+     * 不做「授权后自动继续安装」：APK 已经下载完了，用户授权后退回来点一下
+     * 「重新安装」即可，为此挂一个 ActivityResult 回调不值当。
+     */
+    private fun startInstall(apk: File) {
+        if (!apk.exists()) return
+        if (UpdateInstaller.canInstall(this)) {
+            UpdateInstaller.install(this, apk)
+        } else {
+            UpdateInstaller.openInstallPermissionSettings(this)
         }
     }
 }

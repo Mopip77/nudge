@@ -7,7 +7,9 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -15,8 +17,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
@@ -32,6 +36,8 @@ import com.nudge.app.config.NudgeConfig
 import com.nudge.app.config.ThemeMode
 import com.nudge.app.gesture.Gesture
 import com.nudge.app.gesture.Sensitivity
+import com.nudge.app.update.ReleaseInfo
+import com.nudge.app.update.UpdateState
 
 @Composable
 fun SettingsScreen(
@@ -43,6 +49,11 @@ fun SettingsScreen(
     onThemeChange: (ThemeMode) -> Unit,
     onLyricsEnabledChange: (Boolean) -> Unit,
     onRequestPermission: () -> Unit,
+    currentVersion: String,
+    updateState: UpdateState,
+    onCheckUpdate: () -> Unit,
+    onDownloadUpdate: (ReleaseInfo) -> Unit,
+    onInstallUpdate: (ReleaseInfo) -> Unit,
     onBack: () -> Unit,
 ) {
     Column(
@@ -147,6 +158,15 @@ fun SettingsScreen(
             )
         }
 
+        SectionTitle("关于")
+        UpdateSection(
+            currentVersion = currentVersion,
+            state = updateState,
+            onCheck = onCheckUpdate,
+            onDownload = onDownloadUpdate,
+            onInstall = onInstallUpdate,
+        )
+
         Column(modifier = Modifier.padding(24.dp)) {
             Text(
                 text = "收藏功能仅对网易云音乐有效，且只会点亮红心，不会取消已有收藏。",
@@ -155,6 +175,165 @@ fun SettingsScreen(
             )
         }
     }
+}
+
+/**
+ * 更新区块。检查、下载、安装三步都在原地展开，不弹窗——
+ * 下载过程中弹窗要么挡住界面、要么关掉就丢进度，内联反而状态更清晰。
+ */
+@Composable
+private fun UpdateSection(
+    currentVersion: String,
+    state: UpdateState,
+    onCheck: () -> Unit,
+    onDownload: (ReleaseInfo) -> Unit,
+    onInstall: (ReleaseInfo) -> Unit,
+) {
+    Column(modifier = Modifier.padding(horizontal = 24.dp)) {
+        Text(
+            text = "当前版本 $currentVersion",
+            fontSize = 14.sp,
+            color = MaterialTheme.colorScheme.onBackground,
+        )
+
+        when (state) {
+            is UpdateState.Idle,
+            is UpdateState.UpToDate,
+            is UpdateState.CheckFailed,
+            -> {
+                val hint = when (state) {
+                    is UpdateState.UpToDate -> "已是最新版本"
+                    is UpdateState.CheckFailed -> "检查失败，请确认网络后重试"
+                    else -> null
+                }
+                if (hint != null) {
+                    Text(
+                        text = hint,
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
+                Button(onClick = onCheck, modifier = Modifier.padding(top = 8.dp)) {
+                    Text("检查更新")
+                }
+            }
+
+            is UpdateState.Checking -> {
+                Row(
+                    modifier = Modifier.padding(top = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                    Text(
+                        text = "正在检查…",
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
+                    )
+                }
+            }
+
+            is UpdateState.Available -> {
+                ReleaseNotesCard(state.release)
+                Button(
+                    onClick = { onDownload(state.release) },
+                    modifier = Modifier.padding(top = 8.dp),
+                ) {
+                    Text("立即更新（${formatSize(state.release.apkSize)}）")
+                }
+            }
+
+            is UpdateState.Downloading -> {
+                ReleaseNotesCard(state.release)
+                LinearProgressIndicator(
+                    progress = { state.progress },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 12.dp),
+                )
+                Text(
+                    text = "正在下载 ${formatSize(state.downloadedBytes)} / ${formatSize(state.totalBytes)}",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            }
+
+            is UpdateState.Downloaded -> {
+                ReleaseNotesCard(state.release)
+                // 用户可能在系统安装器上点了取消再退回来，留一个重新安装入口，
+                // 免得他为了重试而把整个包再下一遍
+                Text(
+                    text = "下载完成，请在系统弹出的安装界面确认",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+                Button(
+                    onClick = { onInstall(state.release) },
+                    modifier = Modifier.padding(top = 8.dp),
+                ) {
+                    Text("重新安装")
+                }
+            }
+
+            is UpdateState.DownloadFailed -> {
+                ReleaseNotesCard(state.release)
+                Text(
+                    text = "下载失败，请确认网络后重试",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+                Button(
+                    onClick = { onDownload(state.release) },
+                    modifier = Modifier.padding(top = 8.dp),
+                ) {
+                    Text("重试")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReleaseNotesCard(release: ReleaseInfo) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 8.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+            .padding(12.dp),
+    ) {
+        Text(
+            text = "新版本 ${release.versionName}",
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Medium,
+            color = MaterialTheme.colorScheme.onBackground,
+        )
+        if (release.releaseNotes.isNotBlank()) {
+            // release notes 是 CI 自动生成的 markdown，原样按纯文本显示——
+            // 为渲染几行 commit 列表引入 markdown 库不划算。限高可滚动，防止长更新日志顶开页面
+            Text(
+                text = release.releaseNotes,
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
+                modifier = Modifier
+                    .padding(top = 6.dp)
+                    .heightIn(max = 160.dp)
+                    .verticalScroll(rememberScrollState()),
+            )
+        }
+    }
+}
+
+/** 字节数转人类可读，下载进度用。 */
+private fun formatSize(bytes: Long): String = when {
+    bytes >= 1024 * 1024 -> String.format("%.1f MB", bytes / 1024.0 / 1024.0)
+    bytes >= 1024 -> String.format("%.0f KB", bytes / 1024.0)
+    else -> "$bytes B"
 }
 
 @Composable

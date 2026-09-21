@@ -24,11 +24,14 @@ ActionDispatcher  ──► Vibrator
         │
 MediaControlRepository ──► NotificationListenerService → MediaSessionManager
                            回退: AudioManager.dispatchMediaKeyEvent
+
+UpdateChecker ──► GitHub API /releases/latest
+ApkDownloader ──► UpdateInstaller → FileProvider → 系统安装器
 ```
 
 `GestureRecognizer` 是**纯 Kotlin 状态机，不依赖任何 Android 类**，所以能在 JVM 上直接单元测试。这是刻意的设计——多指手势边界条件太多，靠真机手测不现实。**改手势逻辑时必须保持这个性质**，不要引入 Android 依赖。
 
-## 三条不能违反的约束
+## 四条不能违反的约束
 
 这些都是真机实测踩出来的，不是推测。改动相关代码前先读这里。
 
@@ -50,6 +53,26 @@ MediaControlRepository ──► NotificationListenerService → MediaSessionMan
 
 另外 `holdBaseReadyMs` 与 `longPressMs` 是**两个独立阈值**，别合并：前者是底座就位的去抖阈值（短），后者管「按太久则不算单击」（长）。
 
+### 4. 拉起安装器必须用 `ACTION_INSTALL_PACKAGE`，不能用 `ACTION_VIEW`
+
+真机实测：`ACTION_VIEW` + APK 的 MIME 会弹「打开方式」选择器，把 APKPure、网易云音乐、
+Termux 这些声明了同一 MIME 的应用全列出来，用户得自己认出「软件包安装程序」，选错就装不上。
+
+`ACTION_INSTALL_PACKAGE` 在实测机型上只解析到系统安装器一家，直达安装确认页。它虽然被标了
+deprecated（官方推荐 `PackageInstaller` Session API），但那套要多写一个安装结果广播接收器，
+对一个手动触发的更新入口不划算。
+
+## 应用内更新
+
+设置页手动触发，不做启动自动检查——这是刻意的，盲操工具不该在启动时弹更新提示。
+
+版本比较**只做字符串不等判断**，不解析版本号大小：`/releases/latest` 就代表官方认定的当前版本，
+本地与之不一致即非最新。已知副作用是本地 debug 包（versionName 回落为 `1.0`）总会提示有更新，
+手动入口下可以接受。
+
+`REQUEST_INSTALL_PACKAGES` 权限在 Android 8+ 还需要用户在系统设置里单独授予，
+`UpdateInstaller.canInstall()` 先查再跳，否则拉安装器会被静默拦下。
+
 ## 媒体控制的适用范围
 
 - **下一首**：对任意播放器有效。目标优先网易云，无网易云会话时取第一个 PLAYING 的会话。
@@ -63,7 +86,12 @@ MediaControlRepository ──► NotificationListenerService → MediaSessionMan
 JAVA_HOME=/opt/homebrew/opt/openjdk@17 ./gradlew test
 ```
 
-30 个单元测试，集中在 `GestureRecognizer`——正例（五种手势 × 三档灵敏度）、边界（阈值临界）、负例（滑动、指数不符、超时）。**动手势逻辑必须补相应测试**，尤其是防误触的负例。
+72 个单元测试，主体在 `GestureRecognizer`——正例（五种手势 × 三档灵敏度）、边界（阈值临界）、负例（滑动、指数不符、超时）。**动手势逻辑必须补相应测试**，尤其是防误触的负例。
+
+`org.json` 在 JVM 单测里只有会抛「not mocked」的桩实现，所以 `build.gradle.kts` 里额外引了
+`org.json:json` 作为 testImplementation 覆盖掉它。**不要改用 `returnDefaultValues = true`**——
+那会让所有未 mock 的 Android 调用静默返回 null，把真实失败一并掩盖掉（`ReleaseInfo.parse`
+的解析失败正是被它掩盖过一次）。
 
 涉及媒体控制和震动的部分没有自动化测试，需要真机验证。关键回归项：对**已收藏**的歌重复执行收藏手势，断言 `hasHeart` 保持 true 不变（防 toggle 缺陷回归）。
 

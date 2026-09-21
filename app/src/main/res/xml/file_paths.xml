@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- 对应 ApkDownloader 的下载目录 cacheDir/update -->
+    <cache-path
+        name="update"
+        path="update/" />
+</paths>

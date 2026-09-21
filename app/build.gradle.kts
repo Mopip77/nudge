@@ -51,6 +51,8 @@ android {
     }
     buildFeatures {
         compose = true
+        // 检查更新要读 VERSION_NAME 和最新 release 比对。AGP 8 起默认关闭，得显式打开
+        buildConfig = true
     }
     composeOptions {
         kotlinCompilerExtensionVersion = "1.5.10"
@@ -70,5 +72,9 @@ dependencies {
     implementation("androidx.datastore:datastore-preferences:1.0.0")
 
     testImplementation("junit:junit:4.13.2")
+    // org.json 在 JVM 单测里只有会抛「not mocked」的桩实现，ReleaseInfo.parse 因此
+    // 无法被测试。引入真实现替换掉桩，而不是开 returnDefaultValues——后者会让所有
+    // 未 mock 的调用静默返回 null，把真实失败一并掩盖掉。
+    testImplementation("org.json:json:20231013")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
