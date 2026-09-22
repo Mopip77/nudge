@@ -35,6 +35,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.nudge.app.config.ActionType
+import com.nudge.app.config.LyricsAlignment
 import com.nudge.app.config.NudgeConfig
 import com.nudge.app.config.ProfileSlot
 import com.nudge.app.config.ThemeMode
@@ -53,6 +54,7 @@ fun SettingsScreen(
     onSensitivityChange: (Sensitivity) -> Unit,
     onThemeChange: (ThemeMode) -> Unit,
     onLyricsEnabledChange: (Boolean) -> Unit,
+    onLyricsAlignmentChange: (LyricsAlignment) -> Unit,
     onScreenPinningChange: (Boolean) -> Unit,
     onProfileSave: (Int, String) -> Unit,
     onProfileLoad: (Int) -> Unit,
@@ -166,6 +168,14 @@ fun SettingsScreen(
             multiSelect = true,
             onClick = { onLyricsEnabledChange(!config.lyricsEnabled) },
         )
+        LyricsAlignment.entries.forEach { a ->
+            OptionRow(
+                label = "对齐：${a.displayName}",
+                hint = null,
+                selected = config.lyricsAlignment == a,
+                onClick = { onLyricsAlignmentChange(a) },
+            )
+        }
 
         SectionTitle("防误触")
         OptionRow(

@@ -28,6 +28,7 @@ object ProfileCodec {
             put(KEY_SENSITIVITY, profile.config.sensitivity.name)
             put(KEY_THEME, profile.config.themeMode.name)
             put(KEY_LYRICS, profile.config.lyricsEnabled)
+            put(KEY_LYRICS_ALIGN, profile.config.lyricsAlignment.name)
             put(KEY_PINNING, profile.config.screenPinningEnabled)
         }.toString()
     }
@@ -70,6 +71,9 @@ object ProfileCodec {
                     .let { stored -> ThemeMode.entries.firstOrNull { it.name == stored } }
                     ?: default.themeMode,
                 lyricsEnabled = json.optBoolean(KEY_LYRICS, default.lyricsEnabled),
+                lyricsAlignment = json.optString(KEY_LYRICS_ALIGN)
+                    .let { stored -> LyricsAlignment.entries.firstOrNull { it.name == stored } }
+                    ?: default.lyricsAlignment,
                 screenPinningEnabled = json.optBoolean(KEY_PINNING, default.screenPinningEnabled),
             ),
         )
@@ -80,5 +84,6 @@ object ProfileCodec {
     private const val KEY_SENSITIVITY = "sensitivity"
     private const val KEY_THEME = "themeMode"
     private const val KEY_LYRICS = "lyricsEnabled"
+    private const val KEY_LYRICS_ALIGN = "lyricsAlignment"
     private const val KEY_PINNING = "screenPinningEnabled"
 }

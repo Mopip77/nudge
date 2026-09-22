@@ -46,6 +46,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import android.os.SystemClock
 import com.nudge.app.R
+import com.nudge.app.config.LyricsAlignment
 import com.nudge.app.lyrics.LyricsState
 import com.nudge.app.lyrics.indexAt
 import com.nudge.app.media.TrackInfo
@@ -194,6 +195,7 @@ private const val DAMPING_FAR = 0.62f
 fun LyricsOverlay(
     state: LyricsState,
     track: TrackInfo?,
+    alignment: LyricsAlignment = LyricsAlignment.CENTER,
     modifier: Modifier = Modifier,
 ) {
     val lines = (state as? LyricsState.Loaded)?.lines
@@ -307,6 +309,7 @@ fun LyricsOverlay(
                         isCurrent = index == currentIndex,
                         distance = kotlin.math.abs(index - anchorIndex),
                         targetOffsetY = targetOffsetY,
+                        alignment = alignment,
                         onHeightMeasured = { rowHeights[index] = it },
                     )
                 }
@@ -321,6 +324,7 @@ private fun LyricRow(
     isCurrent: Boolean,
     distance: Int,
     targetOffsetY: Float,
+    alignment: LyricsAlignment,
     onHeightMeasured: (Int) -> Unit,
 ) {
     // 每行各自追 targetOffsetY，刚度与阻尼按距离插值：近处硬而稳、远处软而弹。
@@ -393,7 +397,13 @@ private fun LyricRow(
     ) {
         Text(
             text = text,
-            textAlign = TextAlign.Center,
+            // 折行的句子里，第二行也要跟着靠左，所以对齐要落在 textAlign 上
+            // 而不是 Box 的 contentAlignment——后者只摆放整个文本块的位置，
+            // 块内各折行仍会按 textAlign 居中。
+            textAlign = when (alignment) {
+                LyricsAlignment.CENTER -> TextAlign.Center
+                LyricsAlignment.START -> TextAlign.Start
+            },
             fontSize = FONT_SIZE,
             fontFamily = LyricFont,
             // 当前行和其余行都用 Bold：字重整体加粗更接近 Apple Music 的观感。

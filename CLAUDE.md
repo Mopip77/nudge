@@ -118,6 +118,16 @@ deprecated（官方推荐 `PackageInstaller` Session API），但那套要多写
 三个固定槽位，每个存一份完整 `NudgeConfig` 快照 + 名字，JSON 序列化进 DataStore
 的 `profile_1/2/3`。编解码在 `ProfileCodec`，纯 Kotlin 无 Android 依赖，可 JVM 单测。
 
+### 加配置项要同时改五处
+
+`NudgeConfig` 加字段时，漏掉任何一处都会留下静默的缺陷：
+
+1. `NudgeConfig` 的字段与 `DEFAULT`
+2. `ConfigStore.config` 的读取（读不到回落默认）与对应 setter
+3. **`ConfigStore.loadProfile` 的写入**——见下条，漏了会让加载预设时该项不被重置
+4. `ProfileCodec` 的 encode / decode（decode 要宽容回落）
+5. 设置页的 UI 与 `MainActivity` 的回调
+
 ### 加载预设必须全量写入
 
 `loadProfile` 要把五个配置项**全部**写进 DataStore，包括值等于默认值的项，

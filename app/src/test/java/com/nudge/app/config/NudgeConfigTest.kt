@@ -14,6 +14,7 @@ class NudgeConfigTest {
         sensitivity = Sensitivity.STANDARD,
         themeMode = ThemeMode.SYSTEM,
         lyricsEnabled = true,
+        lyricsAlignment = LyricsAlignment.CENTER,
         screenPinningEnabled = false,
     )
 
