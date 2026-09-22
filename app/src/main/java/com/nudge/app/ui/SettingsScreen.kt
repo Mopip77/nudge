@@ -34,6 +34,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.nudge.app.BuildConfig
 import com.nudge.app.config.ActionType
 import com.nudge.app.config.LyricsAlignment
 import com.nudge.app.config.NudgeConfig
@@ -150,14 +151,19 @@ fun SettingsScreen(
             }
         }
 
-        SectionTitle("灵敏度")
-        Sensitivity.entries.forEach { s ->
-            OptionRow(
-                label = s.displayName,
-                hint = "双击间隔 ${s.params.doubleTapWindowMs}ms，长按 ${s.params.longPressMs}ms",
-                selected = config.sensitivity == s,
-                onClick = { onSensitivityChange(s) },
-            )
+        // 灵敏度只在 debug 包里可调：三档的差别要连着试才分得出来，
+        // 而盲操用户没有对照条件，摆出来只会让人凭感觉乱选、再把误触归咎于应用。
+        // release 固定标准档（见 ConfigStore 读取侧）。
+        if (BuildConfig.DEBUG) {
+            SectionTitle("灵敏度")
+            Sensitivity.entries.forEach { s ->
+                OptionRow(
+                    label = s.displayName,
+                    hint = "双击间隔 ${s.params.doubleTapWindowMs}ms，长按 ${s.params.longPressMs}ms",
+                    selected = config.sensitivity == s,
+                    onClick = { onSensitivityChange(s) },
+                )
+            }
         }
 
         SectionTitle("歌词")

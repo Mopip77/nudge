@@ -56,6 +56,24 @@ ApkDownloader ──► UpdateInstaller → FileProvider → 系统安装器
 
 另外 `holdBaseReadyMs` 与 `longPressMs` 是**两个独立阈值**，别合并：前者是底座就位的去抖阈值（短），后者管「按太久则不算单击」（长）。
 
+#### 灵敏度只在 debug 包里可调
+
+三档的差别要连着试才分得出来，而盲操用户没有对照条件，把选项摆出来只会让人
+凭感觉乱选、再把误触归咎于应用。所以设置页的「灵敏度」分组包在 `BuildConfig.DEBUG` 里，
+**release 恒为 `STANDARD`**。
+
+`Sensitivity` 枚举、`NudgeConfig.sensitivity` 字段、DataStore key、`ProfileCodec`
+的编解码**全部保留**，只藏 UI——Kotlin 没有条件编译，真要按变体摘字段得分叉 source set，
+成本高且收益可疑；保留字段还让 `GestureRecognizer` 的三档测试继续有效。
+
+release 的读取侧（`ConfigStore.config`）**忽略存量值**而非沿用：装过 debug 又换回
+release 的用户会留下一个自己既看不到、也改不回的非标准档位，线上问题就无从复现。
+忽略但**不写盘**，换回 debug 仍是原值。
+
+真机验证过这条闭环（debug 调成严格 → 换 release，UI 消失且 DataStore 仍是 `STRICT`
+→ 换回 debug，严格档还在）。判断装的是哪个变体看 `dumpsys package com.nudge.app`
+的 `flags`：debug 包带 `DEBUGGABLE`，release 没有。
+
 ### 4. 拉起安装器必须用 `ACTION_INSTALL_PACKAGE`，不能用 `ACTION_VIEW`
 
 真机实测：`ACTION_VIEW` + APK 的 MIME 会弹「打开方式」选择器，把 APKPure、网易云音乐、

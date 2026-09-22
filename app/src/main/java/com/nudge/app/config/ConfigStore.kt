@@ -7,6 +7,7 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.nudge.app.BuildConfig
 import com.nudge.app.gesture.Gesture
 import com.nudge.app.gesture.Sensitivity
 import kotlinx.coroutines.flow.Flow
@@ -113,9 +114,16 @@ class ConfigStore(private val context: Context) {
                     ?.let { decodeGestures(it) }
                     ?: NudgeConfig.DEFAULT.bindings[action].orEmpty()
             },
-            sensitivity = prefs[SENSITIVITY_KEY]
-                ?.let { name -> Sensitivity.entries.firstOrNull { it.name == name } }
-                ?: NudgeConfig.DEFAULT.sensitivity,
+            // release 忽略存量值，恒为标准档：灵敏度的 UI 只在 debug 包里，
+            // 装过 debug 又换回 release 的用户会留下一个自己既看不到、也改不回的
+            // 非标准档位，线上问题就无从复现了。不写盘，换回 debug 仍是原值。
+            sensitivity = if (BuildConfig.DEBUG) {
+                prefs[SENSITIVITY_KEY]
+                    ?.let { name -> Sensitivity.entries.firstOrNull { it.name == name } }
+                    ?: NudgeConfig.DEFAULT.sensitivity
+            } else {
+                Sensitivity.STANDARD
+            },
             themeMode = prefs[THEME_KEY]
                 ?.let { name -> ThemeMode.entries.firstOrNull { it.name == name } }
                 ?: NudgeConfig.DEFAULT.themeMode,
