@@ -25,6 +25,12 @@ enum class ThemeMode(val displayName: String) {
     DARK("夜间"),
 }
 
+/** 歌词的水平对齐方式。 */
+enum class LyricsAlignment(val displayName: String) {
+    CENTER("居中"),
+    START("左对齐"),
+}
+
 /**
  * 一个动作可绑多个手势（如「下一首」同时接受双击和两指双击），
  * 但一个手势只能属于一个动作——否则一次手势会触发两个动作。
@@ -36,6 +42,7 @@ data class NudgeConfig(
     val themeMode: ThemeMode,
     /** 关闭后既不显示歌词，也不发起歌词网络请求。 */
     val lyricsEnabled: Boolean,
+    val lyricsAlignment: LyricsAlignment,
     /**
      * 开启后进入主界面自动调用 `startLockTask()` 固定屏幕。
      *
@@ -57,6 +64,7 @@ data class NudgeConfig(
             sensitivity = Sensitivity.STANDARD,
             themeMode = ThemeMode.SYSTEM,
             lyricsEnabled = true,
+            lyricsAlignment = LyricsAlignment.CENTER,
             screenPinningEnabled = false,
         )
     }
@@ -110,6 +118,9 @@ class ConfigStore(private val context: Context) {
                 ?.let { name -> ThemeMode.entries.firstOrNull { it.name == name } }
                 ?: NudgeConfig.DEFAULT.themeMode,
             lyricsEnabled = prefs[LYRICS_ENABLED_KEY] ?: NudgeConfig.DEFAULT.lyricsEnabled,
+            lyricsAlignment = prefs[LYRICS_ALIGNMENT_KEY]
+                ?.let { name -> LyricsAlignment.entries.firstOrNull { it.name == name } }
+                ?: NudgeConfig.DEFAULT.lyricsAlignment,
             screenPinningEnabled = prefs[SCREEN_PINNING_KEY]
                 ?: NudgeConfig.DEFAULT.screenPinningEnabled,
         )
@@ -148,6 +159,10 @@ class ConfigStore(private val context: Context) {
         context.dataStore.edit { it[LYRICS_ENABLED_KEY] = enabled }
     }
 
+    suspend fun setLyricsAlignment(alignment: LyricsAlignment) {
+        context.dataStore.edit { it[LYRICS_ALIGNMENT_KEY] = alignment.name }
+    }
+
     suspend fun setScreenPinningEnabled(enabled: Boolean) {
         context.dataStore.edit { it[SCREEN_PINNING_KEY] = enabled }
     }
@@ -175,7 +190,7 @@ class ConfigStore(private val context: Context) {
     /**
      * 把预设应用成当前配置。返回被应用的预设，空槽返回 null 且不做任何修改。
      *
-     * 五个字段**全部**写入，包括值等于默认值的项。不能做「等于默认就不写」的优化：
+     * 所有字段**全部**写入，包括值等于默认值的项。不能做「等于默认就不写」的优化：
      * bindings 的读取侧口径是「没写过 key 才回落默认，写过空串表示用户主动清空」，
      * 跳过写入会把用户存的空绑定静默恢复成默认绑定。
      */
@@ -189,6 +204,7 @@ class ConfigStore(private val context: Context) {
             prefs[SENSITIVITY_KEY] = config.sensitivity.name
             prefs[THEME_KEY] = config.themeMode.name
             prefs[LYRICS_ENABLED_KEY] = config.lyricsEnabled
+            prefs[LYRICS_ALIGNMENT_KEY] = config.lyricsAlignment.name
             prefs[SCREEN_PINNING_KEY] = config.screenPinningEnabled
         }
         return stored
@@ -203,6 +219,7 @@ class ConfigStore(private val context: Context) {
         val SENSITIVITY_KEY = stringPreferencesKey("sensitivity")
         val THEME_KEY = stringPreferencesKey("theme_mode")
         val LYRICS_ENABLED_KEY = booleanPreferencesKey("lyrics_enabled")
+        val LYRICS_ALIGNMENT_KEY = stringPreferencesKey("lyrics_alignment")
         val SCREEN_PINNING_KEY = booleanPreferencesKey("screen_pinning_enabled")
         fun bindingKey(action: ActionType) = stringPreferencesKey("binding_${action.name}")
         fun profileKey(index: Int) = stringPreferencesKey("profile_$index")

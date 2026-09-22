@@ -161,6 +161,9 @@ class MainActivity : ComponentActivity() {
                             onLyricsEnabledChange = {
                                 scope.launch { configStore.setLyricsEnabled(it) }
                             },
+                            onLyricsAlignmentChange = {
+                                scope.launch { configStore.setLyricsAlignment(it) }
+                            },
                             onScreenPinningChange = {
                                 scope.launch { configStore.setScreenPinningEnabled(it) }
                             },

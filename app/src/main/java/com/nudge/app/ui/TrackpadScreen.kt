@@ -145,7 +145,11 @@ fun TrackpadScreen(
             // 歌词画在最底层，触摸事件由外层 Box 的 pointerInteropFilter 接收，
             // 本层不加任何 pointer 修饰符，故不影响手势识别
             if (config.lyricsEnabled) {
-                LyricsOverlay(state = lyricsState, track = track)
+                LyricsOverlay(
+                    state = lyricsState,
+                    track = track,
+                    alignment = config.lyricsAlignment,
+                )
             }
 
             if (!hasPermission) {

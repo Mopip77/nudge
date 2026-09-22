@@ -52,6 +52,7 @@ class ProfileCodecTest {
             sensitivity = Sensitivity.STRICT,
             themeMode = ThemeMode.DARK,
             lyricsEnabled = false,
+            lyricsAlignment = LyricsAlignment.START,
             screenPinningEnabled = true,
         )
         val original = StoredProfile("严格夜间", config)
@@ -77,6 +78,12 @@ class ProfileCodecTest {
     fun `未知主题名回落默认`() {
         val decoded = ProfileCodec.decode("""{"name":"x","themeMode":"NEON"}""")
         assertEquals(NudgeConfig.DEFAULT.themeMode, decoded?.config?.themeMode)
+    }
+
+    @Test
+    fun `未知歌词对齐名回落默认`() {
+        val decoded = ProfileCodec.decode("""{"name":"x","lyricsAlignment":"JUSTIFY"}""")
+        assertEquals(NudgeConfig.DEFAULT.lyricsAlignment, decoded?.config?.lyricsAlignment)
     }
 
     /** 未知手势名逐个丢弃，已认识的仍保留——半坏的数据不该整条作废。 */

@@ -1,8 +1,10 @@
 package com.nudge.app.ui
 
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -34,7 +36,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
@@ -45,6 +46,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import android.os.SystemClock
 import com.nudge.app.R
+import com.nudge.app.config.LyricsAlignment
 import com.nudge.app.lyrics.LyricsState
 import com.nudge.app.lyrics.indexAt
 import com.nudge.app.media.TrackInfo
@@ -63,40 +65,41 @@ private const val LYRIC_TICK_MS = 100L
 /** 一行歌词占的高度，决定滚动步长。必须随字号一起调，否则大字会被上下行挤掉。 */
 private val LINE_HEIGHT = 52.dp
 
-/** 当前行 / 其余行的字号。参考 Apple Music：当前行明显大一档，形成阅读焦点。 */
-private val CURRENT_FONT_SIZE = 26.sp
-private val OTHER_FONT_SIZE = 22.sp
-
 /**
- * 当前行相对其余行的放大倍率。
+ * 歌词字号。**当前行与其余行一致**，不做大小区分。
  *
- * 文本统一按 OTHER_FONT_SIZE 排版，当前行靠 scale 放大到这个倍率（见 [LyricRow]），
- * 这样换行时大小变化能做成动画，而不是字号突变。
+ * 早先当前行 26sp、其余 22sp，靠 scale 放大表达。改为统一是对齐 Apple Music：
+ * 那里非逐字模式下所有行同字号，焦点完全由清晰度（透明度 + 模糊）建立。
+ * 统一字号顺带消掉了一串因放大衍生的补偿逻辑——排版宽度反向收窄、
+ * 当前行行高补足、scale 与 blur 的顺序约束，都不再需要。
  */
-private val CURRENT_SCALE = CURRENT_FONT_SIZE.value / OTHER_FONT_SIZE.value
+private val FONT_SIZE = 24.sp
 
-/** 歌词左右边距。放大的行按倍率反向收窄排版宽度，使放大后仍落在这个边距上。 */
+/** 歌词左右边距。 */
 private val SIDE_PADDING = 20.dp
 
 /**
- * 非当前行的最大模糊半径，模拟 Apple Music 的景深效果。
+ * 最远处行的模糊半径。
  *
- * 半径随距离递增（见 [LyricRow]），离当前行越远越糊。
+ * 9dp 是在两个约束之间取的：既要有足够的景深（5.5dp 那版实测偏弱，
+ * 远近层次拉不开），又要守住「最远处仍认得出字」——这条是这版的前提，
+ * 早先 12dp 是第 5 行开外就化成色块，层次其实止步于前四行。
  *
- * 上限取 12.dp 是比着 Apple Music 实机观感调的：那里远处几行是彻底化开的色块，
- * 完全不追求可读——只有紧邻当前行的一两行需要能"预读下一句"，再远的行存在意义
- * 只是提供景深和位置感。早先取 3.dp 是想保住"还能认出是歌词"的边界感，
- * 但那样远近层次拉不开，整片歌词看着是平的。
+ * 配合 [BLUR_RAMP_LINES] 看：真正决定观感的是曲线的斜率而不只是峰值，
+ * 峰值抬高的同时把跨度也拉长，近处几行才不会跟着一起变糊。
  */
-private val MAX_BLUR = 12.dp
+private val MAX_BLUR = 9.dp
 
 /**
- * 每远离一行增加的模糊半径。
+ * 模糊达到 [MAX_BLUR] 所需的距离（行）。
  *
- * 2.6dp/行配合 12dp 上限，意味着第 5 行开外才触顶：近处三四行仍保有层次，
- * 不会一步糊到底。
+ * 曲线在这个跨度上铺开，**第 1 行即起步**（不再有"紧邻行完全清晰"的豁免档），
+ * 所以下一行就已带可见模糊——这是 Apple Music 与早先实现最直观的差别。
+ *
+ * 跨度随 [MAX_BLUR] 一起抬到 10：两者要配着调。只抬峰值不拉跨度，
+ * 斜率会变陡，紧邻当前行的一两行跟着糊掉，"预读下一句"就没了。
  */
-private val BLUR_PER_LINE = 2.6.dp
+private const val BLUR_RAMP_LINES = 10f
 
 /** 上下边缘淡出区占容器高度的比例，约两行的量级。 */
 private const val EDGE_FADE_RATIO = 0.12f
@@ -128,8 +131,58 @@ private val LyricFont = FontFamily(
  */
 private const val FALLBACK_NEIGHBORS = 3
 
-/** 换行动画时长，"跟得上换行"与"看得出动效"的折中。 */
-private const val SCROLL_ANIM_MS = 350
+/**
+ * 淡入淡出类属性（透明度、模糊）的过渡时长。
+ *
+ * 位移不走时长而走弹簧（见下），但透明度和模糊没有"惯性"的物理含义，
+ * 用固定时长的补间更稳，也避免弹簧过冲把 alpha 顶过 1。
+ *
+ * 取 260ms 而不是与位移相当的时长：清晰度要**先于**位移落定。
+ * 实测 400ms 那版，换行途中新的当前行还在往上走、模糊却没退干净，
+ * 看着像"字在移动中才慢慢对上焦"；缩短后焦点先建立、位移再收尾，
+ * 反倒更接近 Apple Music 那种"一步到位又有余韵"的观感。
+ */
+private const val FADE_ANIM_MS = 260
+
+/**
+ * 逐行弹簧的刚度区间：当前行最硬，越远越软。
+ *
+ * **错峰与阻尼是同一套机制的两个侧面**，所以不设独立的 delay 参数。
+ * 刚度随距离递减会同时产生两个效果：
+ *
+ * - 靠近当前行的行先到位、远处行后到位 → 相位差，即"下一行先顶上来，
+ *   后面几行被依次拖拽"的链条感
+ * - 远处行的阻尼比更低 → 过冲回弹更明显，即从裁切边界外进来的行
+ *   那种"被拽进来又晃一下"的阻尼感
+ *
+ * 两个端点值真机实测调出来。第一版取 600→90 看着仍是"整体平移"：
+ * 跨度不够，相邻行的相位差小到肉眼合成了一个刚体。拉到 900→28 之后
+ * 链条感才出来——当前行几乎立刻就位（它是阅读焦点，拖泥带水会让人
+ * 觉得歌词滞后于演唱），最远处行明显落后半拍被"拖"上来。
+ *
+ * 中间按距离线性插值，跨度 [SPRING_RAMP_LINES] 行之后不再变软——
+ * 否则窗口边缘那些行会软到永远追不上，快歌连续换行时累积错位。
+ */
+private const val STIFFNESS_NEAR = 900f
+private const val STIFFNESS_FAR = 28f
+
+/**
+ * 刚度衰减铺开的行数，超出后统一取 [STIFFNESS_FAR]。
+ *
+ * 取 4 而不是更大：衰减铺得越开，相邻行之间的差越小，链条感反而越弱。
+ * 4 行之内跑完整个区间，拖尾正好落在视觉能分辨的 3–5 行。
+ */
+private const val SPRING_RAMP_LINES = 4f
+
+/**
+ * 逐行弹簧的阻尼比区间。
+ *
+ * 当前行 1f（临界阻尼，不过冲）：焦点行来回晃会很廉价。
+ * 远处行 0.62f，有可见的一次回弹，这就是用户要的"阻尼拖拉"。
+ * 低于 0.6 会晃两下以上，看着像故障而不是物理感。
+ */
+private const val DAMPING_NEAR = 1f
+private const val DAMPING_FAR = 0.62f
 
 /**
  * 触摸板底下的歌词背景层。
@@ -142,6 +195,7 @@ private const val SCROLL_ANIM_MS = 350
 fun LyricsOverlay(
     state: LyricsState,
     track: TrackInfo?,
+    alignment: LyricsAlignment = LyricsAlignment.CENTER,
     modifier: Modifier = Modifier,
 ) {
     val lines = (state as? LyricsState.Loaded)?.lines
@@ -220,12 +274,13 @@ fun LyricsOverlay(
             .sumOf { rowHeights[it] ?: fallbackPx.toInt() }
             .toFloat()
 
-        // 把当前行的中心推到容器中心
-        val offsetY by animateFloatAsState(
-            targetValue = containerHeightPx / 2f - currentRowHeight / 2f - topOffsetPx,
-            animationSpec = tween(SCROLL_ANIM_MS, easing = FastOutSlowInEasing),
-            label = "lyricScroll",
-        )
+        // 把当前行的中心推到容器中心。
+        //
+        // 这里**不再做动画**：整列共用一条动画曲线正是"所有行同时同速平移"的根源，
+        // 也就是用户说的"直接往上顶、其他顺序变化"的生硬感。改为把它当作静态目标，
+        // 由每行各自的弹簧去追（见 LyricRow 的 springOffset），行与行之间的
+        // 相位差就是错峰效果。
+        val targetOffsetY = containerHeightPx / 2f - currentRowHeight / 2f - topOffsetPx
 
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -237,19 +292,24 @@ fun LyricsOverlay(
                 // （要靠 translationY 滚动），这里让它按内容自然展开，
                 // 超出的部分由外层 clipToBounds 裁掉。
                 .wrapContentHeight(align = Alignment.Top, unbounded = true)
-                // graphicsLayer 的位移走绘制阶段，不触发重组
-                .graphicsLayer { translationY = offsetY }
         ) {
             for (index in windowStart..windowEnd) {
                 // key 必须绑到绝对行号：窗口滑动时 Compose 默认按位置复用
                 // composable，onHeightMeasured 的 lambda 会继续捕获旧 index，
                 // 把实测高度写进错误的 key，导致 rowHeights 永远读不到有效值、
                 // 位移退化成 LINE_HEIGHT 估算，折行歌词下方因此空出一片。
+                //
+                // 换到逐行弹簧后 key 还多担一层作用：它同时决定了每行那个
+                // Animatable 的身份。绑绝对行号，某一行的弹簧状态才会随它
+                // 一起在窗口里平移，而不是被下一行接手（那会让位移从别人的
+                // 当前值继续跑，表现为换行时随机抽搐）。
                 key(index) {
                     LyricRow(
                         text = lines[index].text,
                         isCurrent = index == currentIndex,
                         distance = kotlin.math.abs(index - anchorIndex),
+                        targetOffsetY = targetOffsetY,
+                        alignment = alignment,
                         onHeightMeasured = { rowHeights[index] = it },
                     )
                 }
@@ -263,114 +323,106 @@ private fun LyricRow(
     text: String,
     isCurrent: Boolean,
     distance: Int,
+    targetOffsetY: Float,
+    alignment: LyricsAlignment,
     onHeightMeasured: (Int) -> Unit,
 ) {
-    // 随距离连续衰减而非分档，保留向外淡出的层次。
-    // 起点 0.62 而不是更低：深色底上中间调的灰会发闷，紧邻当前行的
-    // 一两行需要足够亮才能"预读下一句"——这是盲操之外唯一的实际用途。
+    // 每行各自追 targetOffsetY，刚度与阻尼按距离插值：近处硬而稳、远处软而弹。
+    // 相位差（错峰）与过冲（阻尼）都由此产生，不需要额外的 delay 或第二套动画。
     //
-    // 衰减放缓到 0.03/行、下限提到 0.34：加大模糊后，去强调主要靠"糊"而不是"暗"
-    // （Apple Music 就是这个路子，远处行并不特别暗，但已经完全化开）。
-    // 若仍按原来衰减到 0.14，叠上 12dp 模糊会让远处几行直接消失，
-    // 失去景深要的那种"下面还有内容"的体量感。
-    val alpha = if (isCurrent) 1f else (0.62f - (distance - 1) * 0.03f).coerceAtLeast(0.34f)
+    // 插值因子在 SPRING_RAMP_LINES 处封顶，窗口边缘的行不会软到追不上。
+    val t = (distance / SPRING_RAMP_LINES).coerceIn(0f, 1f)
+    val stiffness = STIFFNESS_NEAR + (STIFFNESS_FAR - STIFFNESS_NEAR) * t
+    val damping = DAMPING_NEAR + (DAMPING_FAR - DAMPING_NEAR) * t
+
+    val offsetAnim = remember { Animatable(targetOffsetY) }
+    // 首帧（容器尚未测量，targetOffsetY 还是基于估算值）不该看到弹簧从 0 弹到位，
+    // 那会让歌词每次出现都先抖一下。snapTo 只在这一帧生效，之后都走 animateTo。
+    var settled by remember { mutableStateOf(false) }
+    LaunchedEffect(targetOffsetY, stiffness, damping) {
+        if (!settled) {
+            offsetAnim.snapTo(targetOffsetY)
+            settled = true
+        } else {
+            offsetAnim.animateTo(
+                targetValue = targetOffsetY,
+                animationSpec = spring(dampingRatio = damping, stiffness = stiffness),
+            )
+        }
+    }
+
+    // 统一字号后，当前行与其余行的区分**全部**由这里的透明度和下面的模糊承担。
+    // 当前行 1f，其余行从 0.55 起步缓降到 0.3：跨度比早先略大，
+    // 因为没有字号差之后，只靠模糊撑不起足够的焦点。
+    val alpha = if (isCurrent) 1f else (0.55f - (distance - 1) * 0.035f).coerceAtLeast(0.3f)
     val animatedAlpha by animateFloatAsState(
         targetValue = alpha,
-        animationSpec = tween(SCROLL_ANIM_MS, easing = FastOutSlowInEasing),
+        animationSpec = tween(FADE_ANIM_MS, easing = FastOutSlowInEasing),
         label = "lyricAlpha",
     )
 
-    // 模糊半径随距离递增，当前行保持全清晰。
+    // 模糊在整个区间内缓步加深，**第 1 行即起步**：下一行就带可见模糊，
+    // 但因为封顶只有 MAX_BLUR，最远处仍认得出字。这条曲线是本次改动的核心，
+    // 早先"近处几行清晰、远处一步糊到底"的区分度正是要改掉的。
+    //
     // blur 需要 API 31+，低版本自动降级为只靠 alpha 分层——
     // 那里没有景深，但仍然可读，不影响盲操主功能。
     val blurRadius = when {
         isCurrent || android.os.Build.VERSION.SDK_INT < 31 -> 0.dp
-        else -> (BLUR_PER_LINE * (distance - 1).coerceAtLeast(0)).coerceAtMost(MAX_BLUR)
+        else -> MAX_BLUR * (distance / BLUR_RAMP_LINES).coerceIn(0f, 1f)
     }
-    // 模糊也要过渡：换行时从 12dp 直接跳到 0 是整个"生硬感"里最刺眼的一跳
+    // 模糊也要过渡：换行时直接跳到 0 是整个"生硬感"里最刺眼的一跳
     val animatedBlur by animateDpAsState(
         targetValue = blurRadius,
-        animationSpec = tween(SCROLL_ANIM_MS, easing = FastOutSlowInEasing),
+        animationSpec = tween(FADE_ANIM_MS, easing = FastOutSlowInEasing),
         label = "lyricBlur",
-    )
-
-    // 当前行放大用 scale 而不是动画 fontSize：动 fontSize 会每帧重新测量排版，
-    // 进而每帧触发 onSizeChanged，把抖动的行高写进 rowHeights——而外层的滚动位移
-    // 正是按 rowHeights 累加算的，会跟着抖。scale 只作用于绘制阶段，测量高度不变。
-    //
-    // 代价是放大时字形是被拉伸的而非按字号重新排版，26/22 这个倍率下肉眼看不出来。
-    val targetScale = if (isCurrent) CURRENT_SCALE else 1f
-    val animatedScale by animateFloatAsState(
-        targetValue = targetScale,
-        animationSpec = tween(SCROLL_ANIM_MS, easing = FastOutSlowInEasing),
-        label = "lyricScale",
-    )
-
-    // 排版宽度要随放大倍率收窄，否则放大后左右溢出、首尾字被裁。
-    // 解 (w - 2p) * scale = w - 2 * SIDE_PADDING 得 p = (w - (w - 2*SIDE_PADDING)/scale) / 2。
-    val screenWidth = LocalConfiguration.current.screenWidthDp.dp
-    val sidePadding = (screenWidth - (screenWidth - SIDE_PADDING * 2) / targetScale) / 2
-    val animatedSidePadding by animateDpAsState(
-        targetValue = sidePadding,
-        animationSpec = tween(SCROLL_ANIM_MS, easing = FastOutSlowInEasing),
-        label = "lyricSidePadding",
     )
 
     // 高度由内容决定而非写死：长句折行后要撑开，截断成省略号会让歌词直接读不成句。
     // 折行带来的行高不一由外层按实测值累加吸收（见 rowHeights）。
     // heightIn 保证短句仍占满一个标准行高，避免行距忽大忽小。
     //
-    // 当前行额外留出放大后多占的高度：文本按 OTHER_FONT_SIZE 测量、靠 scale 放大，
-    // 测得的高度是放大前的。不补这一块，折行的当前行放大后会向上下溢出自己的行，
-    // 视觉上贴住相邻行。按最小行高补足即可——放大是绕中心的，两侧各溢出一半。
-    val minHeight = if (isCurrent) LINE_HEIGHT * CURRENT_SCALE else LINE_HEIGHT
-    val animatedMinHeight by animateDpAsState(
-        targetValue = minHeight,
-        animationSpec = tween(SCROLL_ANIM_MS, easing = FastOutSlowInEasing),
-        label = "lyricMinHeight",
-    )
+    // 统一字号后这里不再需要为当前行补放大溢出的高度——所有行等高，
+    // 测量值就是实际占位，rowHeights 的累加天然准确。
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(min = animatedMinHeight)
-            .onSizeChanged { onHeightMeasured(it.height) },
+            .heightIn(min = LINE_HEIGHT)
+            .onSizeChanged { onHeightMeasured(it.height) }
+            // 逐行位移放在行容器上而不是 Text 上：Text 外面还有 padding，
+            // 挂在内层会让位移与模糊的裁切边界相互作用，远处行回弹时边缘发虚。
+            // graphicsLayer 的位移走绘制阶段，不触发重组或重测量。
+            .graphicsLayer { translationY = offsetAnim.value },
         contentAlignment = Alignment.Center,
     ) {
         Text(
             text = text,
-            textAlign = TextAlign.Center,
-            // 字号恒定，大小差异由 animatedScale 在绘制阶段表达（见上）
-            fontSize = OTHER_FONT_SIZE,
+            // 折行的句子里，第二行也要跟着靠左，所以对齐要落在 textAlign 上
+            // 而不是 Box 的 contentAlignment——后者只摆放整个文本块的位置，
+            // 块内各折行仍会按 textAlign 居中。
+            textAlign = when (alignment) {
+                LyricsAlignment.CENTER -> TextAlign.Center
+                LyricsAlignment.START -> TextAlign.Start
+            },
+            fontSize = FONT_SIZE,
             fontFamily = LyricFont,
             // 当前行和其余行都用 Bold：字重整体加粗更接近 Apple Music 的观感。
             // 两档都落在真实字体文件上（只随包了 Medium 和 Bold 两个档），
             // 不会触发系统的合成伪粗体——伪粗体在中文上会把笔画糊成一团。
-            // 当前行与其余行的区分改由字号、透明度、模糊三者承担，已经足够。
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onSurface,
             // 折行上限 3 行：绝大多数歌词两行够用，留第三行兜底超长句；
             // 再多就会把上下文行全挤出屏幕，反而看不出唱到哪了
             maxLines = 3,
             overflow = TextOverflow.Ellipsis,
-            lineHeight = OTHER_FONT_SIZE * 1.3f,
+            lineHeight = FONT_SIZE * 1.3f,
             modifier = Modifier
                 .fillMaxWidth()
-                // 放大的行要按倍率收窄排版宽度。文本在缩放前排版，放大是绕中心的，
-                // 若仍按 20dp 排版，放大后左右各溢出 (scale-1)/2 的宽度——
-                // 实测表现为当前行首尾字被裁掉（「Dancing with my phone」的 D 和 e 都没了）。
-                // 收窄后排版宽度 × scale 正好回到 20dp 边距。
-                .padding(horizontal = animatedSidePadding, vertical = 6.dp)
-                // scale 必须在 blur 之前：blur 默认的 BlurredEdgeTreatment.Rectangle
-                // 会 clip=true 硬裁到排版矩形（见 Compose BlurNode: `clip = maskShape != null`）。
-                // 放在 blur 之后，裁切发生在放大前的窄矩形上，放大的只是已经被切掉首尾的结果——
-                // 表现为当前行里恰好排满整行的那一折行左右各少一个字，而没排满的折行完好。
-                // 上面的 sidePadding 补偿只管在屏幕上留出放大后的位置，管不了这一刀。
-                .graphicsLayer {
-                    scaleX = animatedScale
-                    scaleY = animatedScale
-                }
-                // 零半径时不要挂 blur：BlurNode 无论半径多少都照样 clip=true，
-                // 当前行半径恒为 0，挂着只会白白引入一个裁切边界。
+                .padding(horizontal = SIDE_PADDING, vertical = 6.dp)
+                // 零半径时不要挂 blur：BlurNode 无论半径多少都 clip=true
+                // （见 Compose BlurNode: `clip = maskShape != null`），
+                // 当前行半径恒为 0，挂着只会白白引入一个裁切边界，
+                // 把恰好排满整行的那一折行首尾字切掉。
                 .then(
                     if (animatedBlur > 0.dp) Modifier.blur(animatedBlur) else Modifier
                 )
