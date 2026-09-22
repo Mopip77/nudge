@@ -66,6 +66,7 @@ fun SettingsScreen(
     onCheckUpdate: () -> Unit,
     onDownloadUpdate: (ReleaseInfo) -> Unit,
     onInstallUpdate: (ReleaseInfo) -> Unit,
+    onOpenLyricsLab: () -> Unit,
     onBack: () -> Unit,
 ) {
     Column(
@@ -181,6 +182,32 @@ fun SettingsScreen(
                 selected = config.lyricsAlignment == a,
                 onClick = { onLyricsAlignmentChange(a) },
             )
+        }
+
+        // 歌词动画实验室同样只在 debug 包里：它是开发期的取景器，
+        // 调出来的值要手抄回 LyricsAnimSpec.DEFAULT，不做持久化也不面向用户。
+        if (BuildConfig.DEBUG) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 2.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable(onClick = onOpenLyricsLab)
+                    .padding(horizontal = 8.dp, vertical = 12.dp),
+            ) {
+                Column {
+                    Text(
+                        text = "歌词动画实验室",
+                        fontSize = 15.sp,
+                        color = MaterialTheme.colorScheme.onBackground,
+                    )
+                    Text(
+                        text = "用假歌词实时调滚动参数，仅 debug 包可见",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
+                    )
+                }
+            }
         }
 
         SectionTitle("防误触")

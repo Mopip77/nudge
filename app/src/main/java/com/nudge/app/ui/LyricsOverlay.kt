@@ -78,29 +78,6 @@ private val FONT_SIZE = 24.sp
 /** 歌词左右边距。 */
 private val SIDE_PADDING = 20.dp
 
-/**
- * 最远处行的模糊半径。
- *
- * 9dp 是在两个约束之间取的：既要有足够的景深（5.5dp 那版实测偏弱，
- * 远近层次拉不开），又要守住「最远处仍认得出字」——这条是这版的前提，
- * 早先 12dp 是第 5 行开外就化成色块，层次其实止步于前四行。
- *
- * 配合 [BLUR_RAMP_LINES] 看：真正决定观感的是曲线的斜率而不只是峰值，
- * 峰值抬高的同时把跨度也拉长，近处几行才不会跟着一起变糊。
- */
-private val MAX_BLUR = 9.dp
-
-/**
- * 模糊达到 [MAX_BLUR] 所需的距离（行）。
- *
- * 曲线在这个跨度上铺开，**第 1 行即起步**（不再有"紧邻行完全清晰"的豁免档），
- * 所以下一行就已带可见模糊——这是 Apple Music 与早先实现最直观的差别。
- *
- * 跨度随 [MAX_BLUR] 一起抬到 10：两者要配着调。只抬峰值不拉跨度，
- * 斜率会变陡，紧邻当前行的一两行跟着糊掉，"预读下一句"就没了。
- */
-private const val BLUR_RAMP_LINES = 10f
-
 /** 上下边缘淡出区占容器高度的比例，约两行的量级。 */
 private const val EDGE_FADE_RATIO = 0.12f
 
@@ -125,64 +102,11 @@ private val LyricFont = FontFamily(
 )
 
 /**
- * 窗口边界的兜底值，仅用于容器高度尚未测量出来的首帧。
- * 真正的窗口大小按容器高度算（见 [LyricsOverlay]），写死常数会让歌词
- * 填不满区域——这块区域能放约 20 行，固定取 3 会上下空出一大片。
+ * 可视行数的兜底值，仅用于容器高度尚未测量出来的首帧。
+ * 真正的行数按容器高度算（见 [LyricsScroller]），写死常数会让歌词
+ * 填不满区域——这块区域实际能放约 12 行。
  */
-private const val FALLBACK_NEIGHBORS = 3
-
-/**
- * 淡入淡出类属性（透明度、模糊）的过渡时长。
- *
- * 位移不走时长而走弹簧（见下），但透明度和模糊没有"惯性"的物理含义，
- * 用固定时长的补间更稳，也避免弹簧过冲把 alpha 顶过 1。
- *
- * 取 260ms 而不是与位移相当的时长：清晰度要**先于**位移落定。
- * 实测 400ms 那版，换行途中新的当前行还在往上走、模糊却没退干净，
- * 看着像"字在移动中才慢慢对上焦"；缩短后焦点先建立、位移再收尾，
- * 反倒更接近 Apple Music 那种"一步到位又有余韵"的观感。
- */
-private const val FADE_ANIM_MS = 260
-
-/**
- * 逐行弹簧的刚度区间：当前行最硬，越远越软。
- *
- * **错峰与阻尼是同一套机制的两个侧面**，所以不设独立的 delay 参数。
- * 刚度随距离递减会同时产生两个效果：
- *
- * - 靠近当前行的行先到位、远处行后到位 → 相位差，即"下一行先顶上来，
- *   后面几行被依次拖拽"的链条感
- * - 远处行的阻尼比更低 → 过冲回弹更明显，即从裁切边界外进来的行
- *   那种"被拽进来又晃一下"的阻尼感
- *
- * 两个端点值真机实测调出来。第一版取 600→90 看着仍是"整体平移"：
- * 跨度不够，相邻行的相位差小到肉眼合成了一个刚体。拉到 900→28 之后
- * 链条感才出来——当前行几乎立刻就位（它是阅读焦点，拖泥带水会让人
- * 觉得歌词滞后于演唱），最远处行明显落后半拍被"拖"上来。
- *
- * 中间按距离线性插值，跨度 [SPRING_RAMP_LINES] 行之后不再变软——
- * 否则窗口边缘那些行会软到永远追不上，快歌连续换行时累积错位。
- */
-private const val STIFFNESS_NEAR = 900f
-private const val STIFFNESS_FAR = 28f
-
-/**
- * 刚度衰减铺开的行数，超出后统一取 [STIFFNESS_FAR]。
- *
- * 取 4 而不是更大：衰减铺得越开，相邻行之间的差越小，链条感反而越弱。
- * 4 行之内跑完整个区间，拖尾正好落在视觉能分辨的 3–5 行。
- */
-private const val SPRING_RAMP_LINES = 4f
-
-/**
- * 逐行弹簧的阻尼比区间。
- *
- * 当前行 1f（临界阻尼，不过冲）：焦点行来回晃会很廉价。
- * 远处行 0.62f，有可见的一次回弹，这就是用户要的"阻尼拖拉"。
- * 低于 0.6 会晃两下以上，看着像故障而不是物理感。
- */
-private const val DAMPING_NEAR = 1f
-private const val DAMPING_FAR = 0.62f
+private const val FALLBACK_VISIBLE_ROWS = 6
 
 /**
  * 触摸板底下的歌词背景层。
@@ -196,6 +120,7 @@ fun LyricsOverlay(
     state: LyricsState,
     track: TrackInfo?,
     alignment: LyricsAlignment = LyricsAlignment.CENTER,
+    spec: LyricsAnimSpec = LyricsAnimSpec.DEFAULT,
     modifier: Modifier = Modifier,
 ) {
     val lines = (state as? LyricsState.Loaded)?.lines
@@ -217,7 +142,35 @@ fun LyricsOverlay(
         derivedStateOf { lines.indexAt(track.currentPositionMs(nowMs)) }
     }
 
-    // 前奏期间 indexAt 返回 -1，此时把第一行当作"即将唱的行"对齐到中央
+    LyricsScroller(
+        lines = lines.map { it.text },
+        currentIndex = currentIndex,
+        alignment = alignment,
+        spec = spec,
+        modifier = modifier,
+    )
+}
+
+/**
+ * 歌词滚动的渲染与动画本体，与数据来源解耦。
+ *
+ * 从 [LyricsOverlay] 里拆出来是为了让实验室能用假数据驱动同一套动画——
+ * 若实验室另写一份，调出来的参数在真实播放下未必是同样的观感，
+ * 取景器就失去了意义。
+ *
+ * [currentIndex] 为 -1 表示前奏期（尚未唱到第一行）。
+ */
+@Composable
+internal fun LyricsScroller(
+    lines: List<String>,
+    currentIndex: Int,
+    alignment: LyricsAlignment,
+    spec: LyricsAnimSpec,
+    modifier: Modifier = Modifier,
+) {
+    if (lines.isEmpty()) return
+
+    // 前奏期间把第一行当作"即将唱的行"摆到锚点位置
     val anchorIndex = if (currentIndex < 0) 0 else currentIndex
 
     BoxWithConstraints(
@@ -243,44 +196,56 @@ fun LyricsOverlay(
         // 顶部对齐而非居中：列高会随窗口在列表两端被截断而变化，
         // 居中对齐时 Compose 会把"变短的列"重新居中，导致当前行跟着漂移
         // （歌快放完时尤其明显）。改为从顶部起算、由 offsetY 显式把
-        // 当前行推到中央，位置就只取决于行号，与列高无关。
+        // 当前行推到锚点行，位置就只取决于行号，与列高无关。
         contentAlignment = Alignment.TopCenter,
     ) {
-        // 窗口大小按容器实际高度算：能放几行就渲染几行，让歌词填满整块区域。
-        // 多渲两行做缓冲：一行给滚动动画途中的边缘空档，另一行保证
-        // 上下边缘总有行被裁切位置之外的内容顶上，不会露出半截字。
-        val neighbors = if (maxHeight > 0.dp) {
-            (maxHeight / LINE_HEIGHT / 2).toInt() + 2
+        // 容器能放下的行数，决定窗口要往下渲染多远。
+        val visibleRows = if (maxHeight > 0.dp) {
+            (maxHeight / LINE_HEIGHT).toInt()
         } else {
-            FALLBACK_NEIGHBORS
+            FALLBACK_VISIBLE_ROWS
         }
 
-        // 只渲染当前行附近的窗口，避免长歌词把上千个 Text 都组合出来
-        val windowStart = (anchorIndex - neighbors).coerceAtLeast(0)
-        val windowEnd = (anchorIndex + neighbors).coerceAtMost(lines.lastIndex)
+        // 窗口上下**不再对称**：当前行固定在第 anchorRow 行之后，
+        // 它上方只需要 anchorRow 行（再往上就在容器外了），
+        // 而下方要铺满剩下的全部可视区。早先对称取 neighbors 是因为
+        // 当前行恒定居中，锚点上移后再对称会一头渲染过量、一头不够，
+        // 表现为当前行下方空出一片（窗口已经到底但屏幕还没满）。
+        //
+        // 两端各多渲两行做缓冲：一行给滚动动画途中的边缘空档，
+        // 另一行保证裁切边界外总有内容顶上，不会露出半截字。
+        val rowsAbove = spec.anchorRow + 2
+        val rowsBelow = (visibleRows - spec.anchorRow).coerceAtLeast(1) + 2
 
-        val containerHeightPx = with(LocalDensity.current) { maxHeight.toPx() }
+        // 只渲染当前行附近的窗口，避免长歌词把上千个 Text 都组合出来
+        val windowStart = (anchorIndex - rowsAbove).coerceAtLeast(0)
+        val windowEnd = (anchorIndex + rowsBelow).coerceAtMost(lines.lastIndex)
 
         // 各行实测高度，key 为绝对行号。长歌词会折行，行高不再统一，
         // 位移必须按实测值累加而不是 LINE_HEIGHT 的整数倍——
-        // 否则一旦出现折行，当前行就会逐行累积偏移、越滚越偏离中央。
+        // 否则一旦出现折行，当前行就会逐行累积偏移、越滚越偏离锚点。
         val rowHeights = remember(lines) { mutableStateMapOf<Int, Int>() }
 
         // 当前行之前所有行的实高之和，即当前行在列内的顶边位置。
         // 未测量到的行按 LINE_HEIGHT 估算：仅发生在首帧，测量完成即自校正。
         val fallbackPx = with(LocalDensity.current) { LINE_HEIGHT.toPx() }
-        val currentRowHeight = (rowHeights[anchorIndex] ?: fallbackPx.toInt()).toFloat()
         val topOffsetPx = (windowStart until anchorIndex)
             .sumOf { rowHeights[it] ?: fallbackPx.toInt() }
             .toFloat()
 
-        // 把当前行的中心推到容器中心。
+        // 把当前行的顶边推到屏幕第 anchorRow 行的位置。
         //
-        // 这里**不再做动画**：整列共用一条动画曲线正是"所有行同时同速平移"的根源，
-        // 也就是用户说的"直接往上顶、其他顺序变化"的生硬感。改为把它当作静态目标，
-        // 由每行各自的弹簧去追（见 LyricRow 的 springOffset），行与行之间的
-        // 相位差就是错峰效果。
-        val targetOffsetY = containerHeightPx / 2f - currentRowHeight / 2f - topOffsetPx
+        // 锚点用 LINE_HEIGHT 的整数倍而不是实测高度累加：这里要的是
+        // 「当前行稳定地停在屏幕上的某个固定位置」，若按上方各行的实测高度算，
+        // 一旦上方出现折行（两行高），当前行就会被顶下去半行——盲操下
+        // 焦点位置飘忽比精确对齐更糟。下方各行仍按实测高度自然排布，
+        // 折行只影响它们之间的间距，不影响焦点。
+        //
+        // 这里**不做动画**：整列共用一条动画曲线正是"所有行同时同速平移"的根源。
+        // 它是静态目标，由每行各自的弹簧去追（见 LyricRow），
+        // 行与行之间的相位差就是错峰效果。
+        val anchorTopPx = fallbackPx * spec.anchorRow
+        val targetOffsetY = anchorTopPx - topOffsetPx
 
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -304,12 +269,18 @@ fun LyricsOverlay(
                 // 一起在窗口里平移，而不是被下一行接手（那会让位移从别人的
                 // 当前值继续跑，表现为换行时随机抽搐）。
                 key(index) {
+                    // offset 是**有向**的（负数表示在当前行上方），screenRow 是
+                    // 这行动画结束后会落在屏幕上的第几行。前者管清晰度，
+                    // 后者管弹簧——两套梯度的基准不同，不能合成一个参数。
+                    val offset = index - anchorIndex
                     LyricRow(
-                        text = lines[index].text,
+                        text = lines[index],
                         isCurrent = index == currentIndex,
-                        distance = kotlin.math.abs(index - anchorIndex),
+                        offset = offset,
+                        screenRow = offset + spec.anchorRow,
                         targetOffsetY = targetOffsetY,
                         alignment = alignment,
+                        spec = spec,
                         onHeightMeasured = { rowHeights[index] = it },
                     )
                 }
@@ -318,22 +289,31 @@ fun LyricsOverlay(
     }
 }
 
+/**
+ * [offset]：相对当前行的**有向**距离，负数表示在当前行上方，管清晰度。
+ * [screenRow]：动画结束后落在屏幕上的第几行（0 为顶边），管弹簧。
+ */
 @Composable
 private fun LyricRow(
     text: String,
     isCurrent: Boolean,
-    distance: Int,
+    offset: Int,
+    screenRow: Int,
     targetOffsetY: Float,
     alignment: LyricsAlignment,
+    spec: LyricsAnimSpec,
     onHeightMeasured: (Int) -> Unit,
 ) {
-    // 每行各自追 targetOffsetY，刚度与阻尼按距离插值：近处硬而稳、远处软而弹。
-    // 相位差（错峰）与过冲（阻尼）都由此产生，不需要额外的 delay 或第二套动画。
+    // 每行各自追 targetOffsetY，刚度与阻尼按**屏幕位置**插值：
+    // 越靠屏幕上方越软越弹，越靠下方越硬越稳。相位差（错峰）与过冲（阻尼）
+    // 都由此产生，不需要额外的 delay 或第二套动画。
     //
-    // 插值因子在 SPRING_RAMP_LINES 处封顶，窗口边缘的行不会软到追不上。
-    val t = (distance / SPRING_RAMP_LINES).coerceIn(0f, 1f)
-    val stiffness = STIFFNESS_NEAR + (STIFFNESS_FAR - STIFFNESS_NEAR) * t
-    val damping = DAMPING_NEAR + (DAMPING_FAR - DAMPING_NEAR) * t
+    // 基准从「距当前行的无向距离」换成屏幕位置，是这版的核心修正：
+    // 前者让当前行上下两侧对称地软，于是最上面那行——它明明是最先该
+    // 到位、被后面的行推着走的——反而带着和新进场的行一样的拖尾。
+    // 整列实际只往上走一个方向，阻尼梯度就该沿这个方向单调排布。
+    val stiffness = spec.stiffnessAt(screenRow)
+    val damping = spec.dampingAt(screenRow)
 
     val offsetAnim = remember { Animatable(targetOffsetY) }
     // 首帧（容器尚未测量，targetOffsetY 还是基于估算值）不该看到弹簧从 0 弹到位，
@@ -352,29 +332,26 @@ private fun LyricRow(
     }
 
     // 统一字号后，当前行与其余行的区分**全部**由这里的透明度和下面的模糊承担。
-    // 当前行 1f，其余行从 0.55 起步缓降到 0.3：跨度比早先略大，
-    // 因为没有字号差之后，只靠模糊撑不起足够的焦点。
-    val alpha = if (isCurrent) 1f else (0.55f - (distance - 1) * 0.035f).coerceAtLeast(0.3f)
     val animatedAlpha by animateFloatAsState(
-        targetValue = alpha,
-        animationSpec = tween(FADE_ANIM_MS, easing = FastOutSlowInEasing),
+        targetValue = spec.alphaAt(offset, isCurrent),
+        animationSpec = tween(spec.fadeAnimMs, easing = FastOutSlowInEasing),
         label = "lyricAlpha",
     )
 
     // 模糊在整个区间内缓步加深，**第 1 行即起步**：下一行就带可见模糊，
-    // 但因为封顶只有 MAX_BLUR，最远处仍认得出字。这条曲线是本次改动的核心，
-    // 早先"近处几行清晰、远处一步糊到底"的区分度正是要改掉的。
+    // 但因为有封顶，最远处仍认得出字。
     //
     // blur 需要 API 31+，低版本自动降级为只靠 alpha 分层——
     // 那里没有景深，但仍然可读，不影响盲操主功能。
-    val blurRadius = when {
-        isCurrent || android.os.Build.VERSION.SDK_INT < 31 -> 0.dp
-        else -> MAX_BLUR * (distance / BLUR_RAMP_LINES).coerceIn(0f, 1f)
+    val blurRadius = if (android.os.Build.VERSION.SDK_INT < 31) {
+        0.dp
+    } else {
+        spec.blurDpAt(offset).dp
     }
     // 模糊也要过渡：换行时直接跳到 0 是整个"生硬感"里最刺眼的一跳
     val animatedBlur by animateDpAsState(
         targetValue = blurRadius,
-        animationSpec = tween(FADE_ANIM_MS, easing = FastOutSlowInEasing),
+        animationSpec = tween(spec.fadeAnimMs, easing = FastOutSlowInEasing),
         label = "lyricBlur",
     )
 

@@ -29,6 +29,7 @@ import com.nudge.app.lyrics.LyricsState
 import com.nudge.app.media.ActionResult
 import com.nudge.app.media.MediaControlRepository
 import com.nudge.app.media.TrackInfo
+import com.nudge.app.ui.LyricsLabScreen
 import com.nudge.app.ui.SettingsScreen
 import com.nudge.app.ui.TrackpadScreen
 import com.nudge.app.ui.clearSystemGestureExclusion
@@ -103,6 +104,9 @@ class MainActivity : ComponentActivity() {
             )
             val scope = rememberCoroutineScope()
             var showSettings by remember { mutableStateOf(false) }
+            // 实验室是设置页的下一层，所以是独立的布尔量而不是与 showSettings
+            // 互斥的枚举：从实验室返回要退回设置页，而不是一路退回主界面。
+            var showLyricsLab by remember { mutableStateOf(false) }
             var track by remember { mutableStateOf<TrackInfo?>(null) }
             var hasPermission by remember { mutableStateOf(repository.hasNotificationAccess()) }
             var lyricsState by remember { mutableStateOf<LyricsState>(LyricsState.Idle) }
@@ -158,7 +162,10 @@ class MainActivity : ComponentActivity() {
 
             NudgeTheme(themeMode = config.themeMode) {
                 Surface {
-                    if (showSettings) {
+                    if (showLyricsLab) {
+                        BackHandler { showLyricsLab = false }
+                        LyricsLabScreen(onBack = { showLyricsLab = false })
+                    } else if (showSettings) {
                         // 全 app 只有一个 Activity，也没用 navigation，设置页是靠
                         // showSettings 布尔量 if/else 切出来的——系统返回栈里始终只有
                         // MainActivity 一项，没有「上一页」，返回键默认行为是 finish
@@ -264,6 +271,7 @@ class MainActivity : ComponentActivity() {
                                     ApkDownloader.apkFile(this@MainActivity, release.versionName)
                                 )
                             },
+                            onOpenLyricsLab = { showLyricsLab = true },
                             onBack = { showSettings = false },
                         )
                     } else {
