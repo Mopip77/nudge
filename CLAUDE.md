@@ -73,9 +73,42 @@ deprecated（官方推荐 `PackageInstaller` Session API），但那套要多写
 
 三层，强度递增：
 
-1. **沉浸式粘性 + 全屏手势排除区**（`ui/AntiMistouch.kt`，默认生效）
+1. **沉浸式粘性 + 全屏手势排除区**（`ui/AntiMistouch.kt`）
 2. **返回键连按两次才退出**（`MainActivity`，仅主界面，设置页不加）
-3. **屏幕固定**（`applyScreenPinning`，设置项，默认关）
+3. **屏幕固定**（`applyScreenPinning`）
+
+### 三层由一个开关统管，同生同灭
+
+配置项是 `antiMistouchEnabled`（设置页的「防误触模式」），**默认开**。
+
+它们服务的是同一个目的，分开配置没有道理——早先只有第 3 层可配、前两层硬编码
+默认生效，用户看到的是一个叫「固定屏幕」的开关加一行「系统栏已默认隐藏」的说明，
+开关管不着说明里写的事。
+
+关闭时**完全恢复系统默认**（`exitImmersiveMode` + `clearSystemGestureExclusion`
++ `stopLockTask`），而不是只松一半：语义要么是「防误触的 app」要么是「普通全屏 app」，
+中间态只会让人猜不透当前到底拦不拦返回手势。
+
+默认开是刻意的：这个开关管着原本默认生效的前两层，若默认关，它们会从「默认开」
+退化成「默认关」，对盲操这个核心场景是功能倒退。代价是升级后首次进主界面会弹
+屏幕固定的系统确认框（此前多数用户没开过这项），确认框只弹一次，不想要的整个关掉。
+`NudgeConfigTest` 有测试拦着「默认开」这个方向。
+
+开关值由 `LaunchedEffect` 写进 `MainActivity.antiMistouchEnabled` 字段供
+`onWindowFocusChanged` 读取——后者是 Activity 回调，拿不到 Compose 里的 config。
+该字段初值是 **null**（而非 `DEFAULT` 的 true）：config 首帧必然是 `DEFAULT`，
+真实值稍后才从 DataStore 到达，若用 true 起步，关掉防误触的用户每次启动都会
+被先固定一下屏幕再解开。null 表示「配置未就绪，什么都别做」。
+
+第 2 层用 `BackHandler(enabled = ...)` 而非在回调里判断：关闭时 handler 整个不拦截，
+返回键走系统默认，语义比「拦下来再手动 finish」更准。
+
+#### 废弃了旧的 `screen_pinning_enabled` key
+
+新 key 是 `anti_mistouch_enabled`，旧的直接弃用不做迁移。旧值语义是「是否固定屏幕」，
+与新的「是否启用整套防误触」不等价——把旧的 false 迁过来会顺带关掉用户从没关过的
+前两层，比丢弃更糟。老数据（DataStore 旧 key、预设 JSON 里的 `screenPinningEnabled`）
+一律走宽容回落，解出新默认「开」。
 
 ### 沉浸式与手势排除区是**配套的**，不能只用一个
 
@@ -88,19 +121,20 @@ deprecated（官方推荐 `PackageInstaller` Session API），但那套要多写
 后者一次滑动就永久恢复系统栏，起不到防误触作用。
 
 两者都在 `onWindowFocusChanged` 里重新施加，缺一不可：粘性沉浸在切走再切回后会丢失；
-排除区要 decorView 的实际尺寸，`onCreate` 时还没测量完，拿到的是 0。
+排除区要 decorView 的实际尺寸，`onCreate` 时还没测量完，拿到的是 0。撤销侧同理，
+两个反向操作也要成对调用。
 
 底部 home / 快速切换手势**无法排除**，系统不提供接口。这是必要的——它是用户唯一可靠的
 逃生通道，否则粘性沉浸 + 全边排除会把人锁死在应用里。别去找绕过它的办法。
 
-### 屏幕固定默认关，且不做 device owner
+### 屏幕固定不做 device owner
 
 非 device owner 时 `startLockTask()` 退化为屏幕固定：弹系统确认框，长按「返回+概览」可退出。
 这个强度正好——挡住误触但不锁死用户。真 kiosk 要 DPC 白名单（`setLockTaskPackages`），
 需要 device owner 权限，普通应用不该做。
 
 `stopLockTask()` 在未固定时会抛异常，`startLockTask()` 在已固定时无效果，故调用前先查
-`lockTaskModeState`。有测试拦着「默认关」这个方向。
+`lockTaskModeState`。
 
 ### 没做接近传感器口袋模式
 
@@ -112,6 +146,9 @@ deprecated（官方推荐 `PackageInstaller` Session API），但那套要多写
 `setDecorFitsSystemWindows(false)` 后内容会画到刘海／挖孔下面，两个页面的根布局都加了
 `windowInsetsPadding(WindowInsets.safeDrawing)`。用 `safeDrawing` 而非 `statusBars`——
 系统栏此时本就是隐藏的，真正要避的是切口。
+
+这个 padding **不随防误触开关切换**：`safeDrawing` 在非沉浸式下同样正确
+（此时避的是真实的系统栏而非切口），不必也不该分两套。
 
 ## 配置预设
 
@@ -254,7 +291,7 @@ scale 必须排在 blur 之前），统一字号后这些全部不需要了。
 JAVA_HOME=/opt/homebrew/opt/openjdk@17 ./gradlew test
 ```
 
-92 个单元测试，主体在 `GestureRecognizer`——正例（五种手势 × 三档灵敏度）、边界（阈值临界）、负例（滑动、指数不符、超时）。**动手势逻辑必须补相应测试**，尤其是防误触的负例。
+94 个单元测试，主体在 `GestureRecognizer`——正例（五种手势 × 三档灵敏度）、边界（阈值临界）、负例（滑动、指数不符、超时）。**动手势逻辑必须补相应测试**，尤其是防误触的负例。
 
 预设部分由 `ProfileCodecTest` 覆盖 round-trip 与宽容解码，`ProfileSlotTest` 覆盖槽位号解析。
 
@@ -269,6 +306,17 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@17 ./gradlew test
 - 对**已收藏**的歌重复执行收藏手势，断言 `hasHeart` 保持 true 不变（防 toggle 缺陷回归）
 - 把某动作的手势全部取消勾选 → 存成预设 → 改回有绑定 → 加载该预设 →
   断言该动作仍显示「未绑定」（防 `loadProfile` 跳过写入的缺陷回归）
+- 防误触模式开/关各一次，断言三层同步变化。`dumpsys` 能同时看到三层的状态，
+  不必靠肉眼判断：
+
+  ```bash
+  adb shell dumpsys activity activities | ag -u 'mLockTaskModeState'   # 第 3 层
+  adb shell dumpsys window | ag -u 'mSystemGestureExclusion'           # 第 1 层
+  ```
+
+  开启时应分别是 `PINNED` 与覆盖整屏的 `SkRegion`（如 `(0,78,1080,2400)`，
+  78 是刘海高度）；关闭时是 `NONE` 与只剩滚动条的小矩形。第 2 层看返回键
+  按一次是否退出。
 - 存两个预设后查 shortcut，断言两条都在且 title 是用户起的名字；
   删掉一个后再查，断言只剩一条（防 sync 漏调或误用 `addDynamicShortcuts` 回归）：
 

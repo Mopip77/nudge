@@ -53,7 +53,8 @@ class ProfileCodecTest {
             themeMode = ThemeMode.DARK,
             lyricsEnabled = false,
             lyricsAlignment = LyricsAlignment.START,
-            screenPinningEnabled = true,
+            // 取非默认值（默认是开）才验得出 round-trip 真的搬运了这个字段
+            antiMistouchEnabled = false,
         )
         val original = StoredProfile("严格夜间", config)
         assertEquals(original, ProfileCodec.decode(ProfileCodec.encode(original)))
@@ -66,6 +67,19 @@ class ProfileCodecTest {
         val decoded = ProfileCodec.decode("""{"name":"只有名字"}""")
         assertEquals("只有名字", decoded?.name)
         assertEquals(NudgeConfig.DEFAULT, decoded?.config)
+    }
+
+    /**
+     * 合并「防误触模式」之前存的预设里没有 antiMistouchEnabled 字段
+     * （当时叫 screenPinningEnabled）。这类老数据要解成新默认值「开」，
+     * 与 ConfigStore 废弃旧 key 后统一按新默认起步的口径一致。
+     */
+    @Test
+    fun `老预设缺防误触字段时回落为开`() {
+        val decoded = ProfileCodec.decode(
+            """{"name":"老预设","screenPinningEnabled":false}"""
+        )
+        assertEquals(true, decoded?.config?.antiMistouchEnabled)
     }
 
     @Test

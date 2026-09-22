@@ -15,6 +15,10 @@ import androidx.core.view.WindowInsetsControllerCompat
  * 盲操场景里误触的代价是**不对称**的：误触发一次「下一首」只是烦人，
  * 但误滑退出应用后用户看不见屏幕、根本不知道自己已经退出，后续所有手势
  * 都打在别的应用上。所以这里优先防「意外退出」，而不是防「手势识别错」。
+ *
+ * 本文件的四个函数成两对，由「防误触模式」开关统一切换（见 MainActivity）。
+ * 关闭时完全恢复系统默认，而不是只松一半——语义要么是「防误触的 app」，
+ * 要么是「普通全屏 app」，中间态只会让人猜不透当前到底拦不拦返回手势。
  */
 
 /**
@@ -37,6 +41,18 @@ fun Activity.enterImmersiveMode() {
 }
 
 /**
+ * 退出沉浸式：恢复系统栏，窗口不再铺到物理边缘。
+ *
+ * `setDecorFitsSystemWindows(true)` 必须跟 `show()` 一起做：只 show 不改 fit，
+ * 系统栏会浮在内容之上遮住顶部；只改 fit 不 show，栏仍然是隐藏的。
+ */
+fun Activity.exitImmersiveMode() {
+    WindowCompat.setDecorFitsSystemWindows(window, true)
+    WindowInsetsControllerCompat(window, window.decorView)
+        .show(WindowInsetsCompat.Type.systemBars())
+}
+
+/**
  * 把整个 view 声明为系统手势排除区，使返回手势在其范围内失效。
  *
  * 有两个前提，缺一不可：
@@ -52,4 +68,10 @@ fun Activity.enterImmersiveMode() {
 fun View.excludeFromSystemGestures() {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
     ViewCompat.setSystemGestureExclusionRects(this, listOf(Rect(0, 0, width, height)))
+}
+
+/** 撤销 [excludeFromSystemGestures]，返回手势在全屏范围内恢复正常。 */
+fun View.clearSystemGestureExclusion() {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
+    ViewCompat.setSystemGestureExclusionRects(this, emptyList())
 }

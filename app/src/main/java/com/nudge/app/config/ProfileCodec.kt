@@ -29,7 +29,7 @@ object ProfileCodec {
             put(KEY_THEME, profile.config.themeMode.name)
             put(KEY_LYRICS, profile.config.lyricsEnabled)
             put(KEY_LYRICS_ALIGN, profile.config.lyricsAlignment.name)
-            put(KEY_PINNING, profile.config.screenPinningEnabled)
+            put(KEY_ANTI_MISTOUCH, profile.config.antiMistouchEnabled)
         }.toString()
     }
 
@@ -74,7 +74,12 @@ object ProfileCodec {
                 lyricsAlignment = json.optString(KEY_LYRICS_ALIGN)
                     .let { stored -> LyricsAlignment.entries.firstOrNull { it.name == stored } }
                     ?: default.lyricsAlignment,
-                screenPinningEnabled = json.optBoolean(KEY_PINNING, default.screenPinningEnabled),
+                // 老预设里没有这个字段，回落到默认（开），与 ConfigStore 废弃旧 key
+                // 后统一按新默认起步的口径一致
+                antiMistouchEnabled = json.optBoolean(
+                    KEY_ANTI_MISTOUCH,
+                    default.antiMistouchEnabled,
+                ),
             ),
         )
     }
@@ -85,5 +90,5 @@ object ProfileCodec {
     private const val KEY_THEME = "themeMode"
     private const val KEY_LYRICS = "lyricsEnabled"
     private const val KEY_LYRICS_ALIGN = "lyricsAlignment"
-    private const val KEY_PINNING = "screenPinningEnabled"
+    private const val KEY_ANTI_MISTOUCH = "antiMistouchEnabled"
 }

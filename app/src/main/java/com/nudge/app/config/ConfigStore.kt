@@ -44,12 +44,14 @@ data class NudgeConfig(
     val lyricsEnabled: Boolean,
     val lyricsAlignment: LyricsAlignment,
     /**
-     * 开启后进入主界面自动调用 `startLockTask()` 固定屏幕。
+     * 防误触模式总开关，一次管三层：沉浸式粘性 + 全屏手势排除区、
+     * 返回键双击才退出、屏幕固定。
      *
-     * 默认关：它会弹系统确认框，且退出方式（长按返回+概览）需要用户预先知道，
-     * 不该在用户没主动选择时强加。对「放口袋里盲操」这类场景才值得开。
+     * 三层服务同一个目的（盲操时防意外退出），所以同生同灭而不再分开配置。
+     * 默认开：盲操是本应用的核心场景，防误触本就该是默认态。
+     * 代价是首次进主界面会弹屏幕固定的系统确认框，不想要的整个关掉即可。
      */
-    val screenPinningEnabled: Boolean,
+    val antiMistouchEnabled: Boolean,
 ) {
     /** 反查：某手势绑定到了哪个动作。未绑定返回 null。 */
     fun gestureToAction(gesture: Gesture): ActionType? =
@@ -65,7 +67,7 @@ data class NudgeConfig(
             themeMode = ThemeMode.SYSTEM,
             lyricsEnabled = true,
             lyricsAlignment = LyricsAlignment.CENTER,
-            screenPinningEnabled = false,
+            antiMistouchEnabled = true,
         )
     }
 }
@@ -121,8 +123,8 @@ class ConfigStore(private val context: Context) {
             lyricsAlignment = prefs[LYRICS_ALIGNMENT_KEY]
                 ?.let { name -> LyricsAlignment.entries.firstOrNull { it.name == name } }
                 ?: NudgeConfig.DEFAULT.lyricsAlignment,
-            screenPinningEnabled = prefs[SCREEN_PINNING_KEY]
-                ?: NudgeConfig.DEFAULT.screenPinningEnabled,
+            antiMistouchEnabled = prefs[ANTI_MISTOUCH_KEY]
+                ?: NudgeConfig.DEFAULT.antiMistouchEnabled,
         )
     }
 
@@ -163,8 +165,8 @@ class ConfigStore(private val context: Context) {
         context.dataStore.edit { it[LYRICS_ALIGNMENT_KEY] = alignment.name }
     }
 
-    suspend fun setScreenPinningEnabled(enabled: Boolean) {
-        context.dataStore.edit { it[SCREEN_PINNING_KEY] = enabled }
+    suspend fun setAntiMistouchEnabled(enabled: Boolean) {
+        context.dataStore.edit { it[ANTI_MISTOUCH_KEY] = enabled }
     }
 
     /** 恒为 [PROFILE_SLOT_COUNT] 个元素，空槽也占位——界面靠固定槽位保持位置稳定。 */
@@ -205,7 +207,7 @@ class ConfigStore(private val context: Context) {
             prefs[THEME_KEY] = config.themeMode.name
             prefs[LYRICS_ENABLED_KEY] = config.lyricsEnabled
             prefs[LYRICS_ALIGNMENT_KEY] = config.lyricsAlignment.name
-            prefs[SCREEN_PINNING_KEY] = config.screenPinningEnabled
+            prefs[ANTI_MISTOUCH_KEY] = config.antiMistouchEnabled
         }
         return stored
     }
@@ -220,7 +222,10 @@ class ConfigStore(private val context: Context) {
         val THEME_KEY = stringPreferencesKey("theme_mode")
         val LYRICS_ENABLED_KEY = booleanPreferencesKey("lyrics_enabled")
         val LYRICS_ALIGNMENT_KEY = stringPreferencesKey("lyrics_alignment")
-        val SCREEN_PINNING_KEY = booleanPreferencesKey("screen_pinning_enabled")
+        // 刻意换新 key 而不沿用旧的 screen_pinning_enabled：旧值的语义是
+        // 「是否固定屏幕」，与新的「是否启用整套防误触」不等价。把旧的 false
+        // 迁移过来会顺带关掉用户从没关过的沉浸式与双击返回，比直接丢弃更糟。
+        val ANTI_MISTOUCH_KEY = booleanPreferencesKey("anti_mistouch_enabled")
         fun bindingKey(action: ActionType) = stringPreferencesKey("binding_${action.name}")
         fun profileKey(index: Int) = stringPreferencesKey("profile_$index")
 

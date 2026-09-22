@@ -31,8 +31,10 @@ import com.nudge.app.media.MediaControlRepository
 import com.nudge.app.media.TrackInfo
 import com.nudge.app.ui.SettingsScreen
 import com.nudge.app.ui.TrackpadScreen
+import com.nudge.app.ui.clearSystemGestureExclusion
 import com.nudge.app.ui.enterImmersiveMode
 import com.nudge.app.ui.excludeFromSystemGestures
+import com.nudge.app.ui.exitImmersiveMode
 import com.nudge.app.update.ApkDownloader
 import com.nudge.app.update.UpdateChecker
 import com.nudge.app.update.UpdateInstaller
@@ -40,7 +42,9 @@ import com.nudge.app.update.UpdateState
 import com.nudge.app.ui.theme.NudgeTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -67,6 +71,16 @@ class MainActivity : ComponentActivity() {
     private lateinit var dispatcher: ActionDispatcher
     private lateinit var configStore: ConfigStore
 
+    /**
+     * 防误触模式的当前值，供 [onWindowFocusChanged] 读取。
+     *
+     * 它是 Activity 回调，拿不到 Compose 里的 config，只能靠这个字段传递；
+     * 写入方是 setContent 内的 LaunchedEffect。初值 null 表示配置尚未就绪——
+     * 此时不施加任何一层，避免关掉防误触的用户每次启动都被首帧的默认值
+     * 先固定一下屏幕再解开。
+     */
+    private var antiMistouchEnabled: Boolean? = null
+
     @OptIn(ExperimentalComposeUiApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -78,9 +92,8 @@ class MainActivity : ComponentActivity() {
         // 盲操场景下屏幕熄灭就没法操作了
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        // 沉浸式粘性：边缘滑动只能召出系统栏，要再滑一次才真的导航。
-        // 同时它是下面全屏手势排除区生效的前提（见 AntiMistouch.kt）。
-        enterImmersiveMode()
+        // 这里不再无条件进沉浸式：三层防误触统一由配置开关控制，
+        // 而配置来自 DataStore 的 Flow，要等下面的 LaunchedEffect 拿到真实值。
 
         setContent {
             val config by configStore.config.collectAsState(initial = NudgeConfig.DEFAULT)
@@ -113,10 +126,19 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            // 屏幕固定跟随配置开关。放在 setContent 里而非 onResume，是因为
-            // config 来自 DataStore 的 Flow，首帧拿到的是 DEFAULT，真实值稍后才到。
-            LaunchedEffect(config.screenPinningEnabled) {
-                applyScreenPinning(config.screenPinningEnabled)
+            // 三层防误触统一跟随配置开关。
+            //
+            // 不直接用上面的 config：它首帧是 DEFAULT（防误触开），真实值稍后才到，
+            // 关掉防误触的用户每次启动都会被先固定一下屏幕再解开。这里单独收一份
+            // 初值为 null 的流，配置真正就绪后才施加。
+            val antiMistouch by configStore.config
+                .map { it.antiMistouchEnabled }
+                .distinctUntilChanged()
+                .collectAsState(initial = null)
+            LaunchedEffect(antiMistouch) {
+                val enabled = antiMistouch ?: return@LaunchedEffect
+                antiMistouchEnabled = enabled
+                applyAntiMistouch(enabled)
             }
 
             // 歌曲变化时重新拉歌词。以 mediaId 为 key，切歌会自动取消上一次
@@ -164,8 +186,8 @@ class MainActivity : ComponentActivity() {
                             onLyricsAlignmentChange = {
                                 scope.launch { configStore.setLyricsAlignment(it) }
                             },
-                            onScreenPinningChange = {
-                                scope.launch { configStore.setScreenPinningEnabled(it) }
+                            onAntiMistouchChange = {
+                                scope.launch { configStore.setAntiMistouchEnabled(it) }
                             },
                             onProfileSave = { index, name ->
                                 scope.launch {
@@ -247,8 +269,12 @@ class MainActivity : ComponentActivity() {
                     } else {
                         // 主界面的返回键要连按两次才退出。设置页不加这层——
                         // 那里是明视操作，且「返回」只是退回主界面，误触没有代价。
+                        //
+                        // 用 enabled 参数而不是在回调里判断：关掉防误触时这个 handler
+                        // 整个不拦截，返回键走系统默认直接退出，语义比「拦下来再手动
+                        // finish」更准。配置未就绪（null）时按默认值开着。
                         var lastBackMs by remember { mutableStateOf(0L) }
-                        BackHandler {
+                        BackHandler(enabled = antiMistouch ?: NudgeConfig.DEFAULT.antiMistouchEnabled) {
                             val now = SystemClock.elapsedRealtime()
                             if (now - lastBackMs < DOUBLE_BACK_WINDOW_MS) {
                                 finish()
@@ -299,17 +325,37 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * 重新施加沉浸式，并把整块窗口登记为手势排除区。
+     * 按当前开关重新施加（或撤销）窗口层的防误触。
      *
-     * 两件事都必须在这里做而不是只在 onCreate：
+     * 必须在这里做而不是只在配置变化时做：
      * - 沉浸式粘性在切走再切回后会丢失，导航栏退回默认行为；
      * - 排除区要的是 decorView 的实际尺寸，onCreate 时还没测量完，拿到的是 0。
+     *
+     * 配置未就绪时什么都不做，理由见 [antiMistouchEnabled]。
      */
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (!hasFocus) return
-        enterImmersiveMode()
-        window.decorView.excludeFromSystemGestures()
+        applyWindowAntiMistouch(antiMistouchEnabled ?: return)
+    }
+
+    /**
+     * 施加三层防误触。开关关闭时逐层撤销，完全恢复系统默认。
+     */
+    private fun applyAntiMistouch(enabled: Boolean) {
+        applyWindowAntiMistouch(enabled)
+        applyScreenPinning(enabled)
+    }
+
+    /** 第 1 层：沉浸式粘性 + 全屏手势排除区。两者配套，见 AntiMistouch.kt。 */
+    private fun applyWindowAntiMistouch(enabled: Boolean) {
+        if (enabled) {
+            enterImmersiveMode()
+            window.decorView.excludeFromSystemGestures()
+        } else {
+            exitImmersiveMode()
+            window.decorView.clearSystemGestureExclusion()
+        }
     }
 
     /**
@@ -324,7 +370,7 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * 按配置开关屏幕固定。
+     * 第 3 层：屏幕固定。
      *
      * 非 device owner 时 `startLockTask()` 退化为屏幕固定：系统弹框征求同意，
      * 用户长按返回+概览可以退出。这正是我们要的强度——挡住误触，但不锁死用户。

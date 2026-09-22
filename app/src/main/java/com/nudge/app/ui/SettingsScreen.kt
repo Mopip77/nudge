@@ -55,7 +55,7 @@ fun SettingsScreen(
     onThemeChange: (ThemeMode) -> Unit,
     onLyricsEnabledChange: (Boolean) -> Unit,
     onLyricsAlignmentChange: (LyricsAlignment) -> Unit,
-    onScreenPinningChange: (Boolean) -> Unit,
+    onAntiMistouchChange: (Boolean) -> Unit,
     onProfileSave: (Int, String) -> Unit,
     onProfileLoad: (Int) -> Unit,
     onProfileDelete: (Int) -> Unit,
@@ -178,19 +178,15 @@ fun SettingsScreen(
         }
 
         SectionTitle("防误触")
+        // 三层合一个开关，所以 hint 要把副作用说全：用户是一次性接受全部三项。
         OptionRow(
-            label = "固定屏幕",
-            hint = "开启后其他应用与通知无法打断；退出请长按「返回 + 概览」，" +
+            label = "防误触模式",
+            hint = "隐藏系统栏，边缘滑动需两次才触发返回／主页；返回键连按两次才退出；" +
+                   "固定屏幕使其他应用与通知无法打断，退出请长按「返回 + 概览」，" +
                    "手势导航下为上滑并按住",
-            selected = config.screenPinningEnabled,
+            selected = config.antiMistouchEnabled,
             multiSelect = true,
-            onClick = { onScreenPinningChange(!config.screenPinningEnabled) },
-        )
-        Text(
-            text = "系统栏已默认隐藏，边缘滑动需两次才触发返回／主页。",
-            fontSize = 12.sp,
-            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
-            modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp),
+            onClick = { onAntiMistouchChange(!config.antiMistouchEnabled) },
         )
 
         SectionTitle("主题")

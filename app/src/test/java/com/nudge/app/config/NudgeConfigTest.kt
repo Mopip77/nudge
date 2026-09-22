@@ -3,8 +3,8 @@ package com.nudge.app.config
 import com.nudge.app.gesture.Gesture
 import com.nudge.app.gesture.Sensitivity
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NudgeConfigTest {
@@ -15,7 +15,7 @@ class NudgeConfigTest {
         themeMode = ThemeMode.SYSTEM,
         lyricsEnabled = true,
         lyricsAlignment = LyricsAlignment.CENTER,
-        screenPinningEnabled = false,
+        antiMistouchEnabled = true,
     )
 
     @Test
@@ -75,10 +75,11 @@ class NudgeConfigTest {
     }
 
     @Test
-    fun `屏幕固定默认关闭`() {
-        // 它会弹系统确认框、退出方式也需要用户预先知道，
-        // 不该在用户没主动选择时强加。改默认值前先想清楚这点。
-        assertFalse(NudgeConfig.DEFAULT.screenPinningEnabled)
+    fun `防误触模式默认开启`() {
+        // 这个开关一次管三层，其中沉浸式与双击返回在合并前是硬编码默认生效的。
+        // 若改成默认关，那两层会从「默认开」退化成「默认关」，对盲操这个
+        // 核心场景是功能倒退。改默认值前先想清楚这点。
+        assertTrue(NudgeConfig.DEFAULT.antiMistouchEnabled)
     }
 
     @Test
