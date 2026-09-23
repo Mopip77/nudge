@@ -105,6 +105,9 @@ class MediaControlRepository(private val context: Context) {
             MediaCommand.PAUSE -> KeyEvent.KEYCODE_MEDIA_PAUSE
             MediaCommand.PLAY_PAUSE -> KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE
             MediaCommand.LIKE -> error("收藏使用独立入口")
+            // 歌词开关只改本机配置，在 ActionDispatcher 里就分流走了，
+            // 根本不该走到播放器这一层。
+            MediaCommand.TOGGLE_LYRICS -> error("歌词开关不经播放器")
         }
         val result = if (command == MediaCommand.NEXT || command == MediaCommand.PREVIOUS) {
             ActionResult.Skipped
@@ -139,6 +142,7 @@ class MediaControlRepository(private val context: Context) {
                     else controller.transportControls.play()
                 }
                 MediaCommand.LIKE -> error("收藏使用独立入口")
+                MediaCommand.TOGGLE_LYRICS -> error("歌词开关不经播放器")
             }
             return result
         }

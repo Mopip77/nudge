@@ -1,5 +1,6 @@
 package com.nudge.app.action
 
+import com.nudge.app.media.ActionResult
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -163,6 +164,30 @@ class HapticSpecTest {
             "五种波形的形状签名必须两两不同，实际 $signatures",
             signatures.size,
             signatures.toSet().size,
+        )
+    }
+
+    @Test
+    fun `歌词开关的两条波形方向相反`() {
+        // 歌词是纯视觉的，盲操下看不见屏幕就只能靠振动判断切成了哪一边，
+        // 所以这一对是整套里唯一**必须**区分方向的。方向若写反或写成一样，
+        // 这个动作的反馈就等于没有。
+        val on = HapticPalette.LYRICS_ON
+        val off = HapticPalette.LYRICS_OFF
+
+        assertTrue("打开应为间隔收紧（起来了）", on.startGapMs > on.endGapMs)
+        assertTrue("关闭应为间隔拉开（下去了）", off.startGapMs < off.endGapMs)
+    }
+
+    @Test
+    fun `歌词切换按状态选不同波形`() {
+        assertEquals(
+            HapticId.LYRICS_ON,
+            HapticPalette.idFor(ActionResult.LyricsToggled(shown = true)),
+        )
+        assertEquals(
+            HapticId.LYRICS_OFF,
+            HapticPalette.idFor(ActionResult.LyricsToggled(shown = false)),
         )
     }
 

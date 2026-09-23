@@ -330,6 +330,11 @@ class MainActivity : ComponentActivity() {
                                     val result = dispatcher.dispatch(gesture, config)
                                     if (result == null) return@launch
 
+                                    // 歌词开关不经播放器，曲目信息不可能变。走下面那段
+                                    // 刷新只会白等 600ms 再做一次跨进程查询；而界面由
+                                    // config 流驱动，DataStore 一写就自动重组了。
+                                    if (result is ActionResult.LyricsToggled) return@launch
+
                                     // 收藏成功时乐观点亮红心：setRating 是异步的，
                                     // 等网易云回推 metadata 要几百毫秒，盲操场景下
                                     // 先按已知结果更新，随后的刷新会校正。

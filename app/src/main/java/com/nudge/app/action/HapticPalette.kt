@@ -136,12 +136,55 @@ object HapticPalette {
         burstMs = 0,
     )
 
-    /** 五种波形的完整集合，实验室按这个顺序铺页面。 */
+    /**
+     * 歌词已打开：两记**收紧**的脉冲，「支棱起来了」。
+     *
+     * 这一对（开/关）是整套波形里唯一**必须区分方向**的：其余动作的结果
+     * 用户要么听得见（播放/暂停），要么本来就是单向的（切歌、收藏）。
+     * 而歌词是纯视觉的，盲操下看不见屏幕就不知道自己切成了哪一边，
+     * 用同一条波形等于没有反馈。
+     *
+     * 方向语义直接借用 [LIKED] / [FAILED] 那一对已经确立的隐喻：
+     * 间隔收紧 = 起来了，间隔拉开 = 下去了。用户学会一次就能套用到这里。
+     *
+     * 形状签名 `(2, false, 加速)`——与既有五条都不撞（见
+     * `HapticSpecTest` 的「形状两两不同」）。
+     */
+    val LYRICS_ON = HapticSpec(
+        pulses = 2,
+        pulseMs = 20,
+        startGapMs = 90,
+        endGapMs = 40,
+        startAmp = 0.5f,
+        endAmp = 0.8f,
+        burstMs = 0,
+    )
+
+    /**
+     * 歌词已关闭：两记**拉开**的脉冲，[LYRICS_ON] 的镜像。
+     *
+     * 形状签名 `(2, false, 减速)`。与「播放/暂停」同为两记但节奏走向不同
+     * （那条是匀速），这是三者之间唯一的区分维度——振幅不算数，
+     * 见类注释里关于「振幅没有对照分不出来」的那段。
+     */
+    val LYRICS_OFF = HapticSpec(
+        pulses = 2,
+        pulseMs = 20,
+        startGapMs = 40,
+        endGapMs = 90,
+        startAmp = 0.8f,
+        endAmp = 0.5f,
+        burstMs = 0,
+    )
+
+    /** 全部波形，实验室按这个顺序铺页面。 */
     val ALL: List<HapticSlot> = listOf(
         HapticSlot(HapticId.NEXT, "下一首", "单记干脆的重击。最高频操作，越短越好", NEXT),
         HapticSlot(HapticId.LIKED, "收藏成功", "加速脉冲列 + 迸发，蓄力到「填满」", LIKED),
         HapticSlot(HapticId.ALREADY_LIKED, "已收藏", "两记轻快短击，「这个我已经有了」", ALREADY_LIKED),
         HapticSlot(HapticId.PLAY_PAUSE, "播放/暂停", "两记等距中性击，不区分方向", PLAY_PAUSE),
+        HapticSlot(HapticId.LYRICS_ON, "歌词已打开", "两记收紧，「起来了」", LYRICS_ON),
+        HapticSlot(HapticId.LYRICS_OFF, "歌词已关闭", "两记拉开，上一条的镜像", LYRICS_OFF),
         HapticSlot(HapticId.FAILED, "失败 / 无会话", "减速渐弱，收藏那条的镜像", FAILED),
     )
 
@@ -151,6 +194,9 @@ object HapticPalette {
         ActionResult.PlaybackCommandSent -> HapticId.PLAY_PAUSE
         ActionResult.Liked -> HapticId.LIKED
         ActionResult.AlreadyLiked -> HapticId.ALREADY_LIKED
+        // 歌词是纯视觉的，盲操下唯一能知道切成了哪一边的渠道就是这两条波形
+        is ActionResult.LyricsToggled ->
+            if (result.shown) HapticId.LYRICS_ON else HapticId.LYRICS_OFF
         ActionResult.NoSession, is ActionResult.Failed -> HapticId.FAILED
     }
 
@@ -160,6 +206,8 @@ object HapticPalette {
         HapticId.LIKED -> LIKED
         HapticId.ALREADY_LIKED -> ALREADY_LIKED
         HapticId.PLAY_PAUSE -> PLAY_PAUSE
+        HapticId.LYRICS_ON -> LYRICS_ON
+        HapticId.LYRICS_OFF -> LYRICS_OFF
         HapticId.FAILED -> FAILED
     }
 }
@@ -175,6 +223,8 @@ enum class HapticId {
     LIKED,
     ALREADY_LIKED,
     PLAY_PAUSE,
+    LYRICS_ON,
+    LYRICS_OFF,
     FAILED,
 }
 

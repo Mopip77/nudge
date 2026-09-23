@@ -59,6 +59,18 @@ sealed interface ActionResult {
     data object Liked : ActionResult
     /** 本来就已收藏，未做任何操作 */
     data object AlreadyLiked : ActionResult
+    /**
+     * 歌词显示已切换，[shown] 是切换**之后**的状态。
+     *
+     * 这是唯一一个不经播放器的结果——它只改本机的 UI 配置。
+     * 仍然走 [ActionResult] 是为了让震动反馈的选择保持单一口径
+     * （`HapticPalette.idFor` 按结果选波形），否则这一个动作就得
+     * 在 dispatcher 里另起一条反馈支路。
+     *
+     * 带上 [shown] 而不是做成两个 data object：调用方（MainActivity）
+     * 要据此决定是否发起歌词请求，而结果本身是它唯一能拿到的信号。
+     */
+    data class LyricsToggled(val shown: Boolean) : ActionResult
     /** 找不到可控制的播放会话 */
     data object NoSession : ActionResult
     /** 其他失败 */

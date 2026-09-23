@@ -43,6 +43,7 @@ class ProfileCodecTest {
                 ),
                 ActionType.LIKE to setOf(Gesture.THREE_FINGER_DOUBLE_TAP),
                 ActionType.PLAY_PAUSE to setOf(Gesture.TWO_FINGER_SWIPE_UP),
+                ActionType.TOGGLE_LYRICS to setOf(Gesture.TWO_FINGER_SWIPE_DOWN),
             )
         )
         val original = StoredProfile("多绑", config)

@@ -21,6 +21,14 @@ enum class ActionType(val displayName: String) {
     // 默认不绑任何手势：播放/暂停误触代价虽低（可逆、听得见），但手势池已经够用，
     // 绑哪个交给用户自己在设置页决定。
     PLAY_PAUSE("播放/暂停"),
+    /**
+     * 切换歌词显示。**唯一不经播放器的动作**，只改本机配置。
+     *
+     * 同样默认不绑手势，理由同播放/暂停。另有一条：它误触的代价比其余动作
+     * 都低（纯视觉、立刻可见、再做一次就回来了），所以不值得占用一个
+     * 好记的手势位。
+     */
+    TOGGLE_LYRICS("显示歌词"),
 }
 
 enum class ThemeMode(val displayName: String) {
@@ -72,6 +80,10 @@ data class NudgeConfig(
                 ActionType.LIKE to setOf(Gesture.THREE_FINGER_DOUBLE_TAP),
                 // 播放/暂停默认不绑：手势池已够用，绑哪个交给用户决定
                 ActionType.PLAY_PAUSE to emptySet(),
+                // 同上。空集必须显式写出，不能靠「不写」表达——读取侧按
+                // ActionType.entries 全量构造 map，缺 key 与空集在那里等价，
+                // 但对 equals 不等价，漏写会让 ProfileCodecTest 的 round-trip 挂掉。
+                ActionType.TOGGLE_LYRICS to emptySet(),
             ),
             sensitivity = Sensitivity.STANDARD,
             themeMode = ThemeMode.SYSTEM,

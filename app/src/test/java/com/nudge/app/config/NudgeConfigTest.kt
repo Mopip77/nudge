@@ -75,6 +75,31 @@ class NudgeConfigTest {
     }
 
     @Test
+    fun `每个动作在默认配置里都有条目`() {
+        // 读取侧（ConfigStore.config、ProfileCodec.decode）按 ActionType.entries
+        // 全量构造 map，那里「缺 key」与「空集」等价——但对 equals 不等价。
+        // DEFAULT 漏写某个动作，round-trip 出来的 config 会多一个空集键而
+        // 与 DEFAULT 判不相等，ProfileCodecTest 的四个用例会一起挂。
+        // 加动作时若默认不绑，要显式写 emptySet() 而不是不写。
+        ActionType.entries.forEach { action ->
+            assertTrue(
+                "DEFAULT.bindings 缺少 $action",
+                NudgeConfig.DEFAULT.bindings.containsKey(action),
+            )
+        }
+    }
+
+    @Test
+    fun `歌词开关默认不绑手势`() {
+        // 与播放/暂停同理：手势池已够用，且它误触代价极低（纯视觉、
+        // 再做一次就回来），不值得默认占一个好记的手势位。
+        assertEquals(
+            emptySet<Gesture>(),
+            NudgeConfig.DEFAULT.bindings[ActionType.TOGGLE_LYRICS],
+        )
+    }
+
+    @Test
     fun `防误触模式默认开启`() {
         // 这个开关一次管三层，其中沉浸式与双击返回在合并前是硬编码默认生效的。
         // 若改成默认关，那两层会从「默认开」退化成「默认关」，对盲操这个

@@ -159,9 +159,12 @@ fun SettingsScreen(
         }
 
         SectionTitle("歌词")
+        // 这个勾选框与「手势绑定」里的「显示歌词」是**同一个开关**，
+        // 只是入口不同。hint 里点明这件事：两处同名却不说明关系的话，
+        // 用户会以为手势绑的是另一项设置。
         OptionRow(
             label = "显示歌词",
-            hint = "关闭后不再请求歌词，仅显示曲目信息",
+            hint = "关闭后不再请求歌词，仅显示曲目信息。可在「手势绑定」里绑手势来盲操切换",
             selected = config.lyricsEnabled,
             multiSelect = true,
             onClick = { onLyricsEnabledChange(!config.lyricsEnabled) },

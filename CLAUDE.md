@@ -621,7 +621,7 @@ scale 必须排在 blur 之前），统一字号后这些全部不需要了。
 
 ## 振动反馈
 
-盲操下振动是确认操作结果的**唯一**渠道，所以五种反馈必须可区分。
+盲操下振动是确认操作结果的**唯一**渠道，所以每种反馈必须可区分。
 早先全是单震或近似单震，只有时长差别（50 / 30-80-30 / 20 / 200ms），
 实测基本分不出来——尤其切歌与已收藏，除了长短没有任何别的差异。
 
@@ -659,7 +659,7 @@ mSupportedEffects=[], mCompositionSizeMax=0, mPwleSizeMax=0
 
 盲操下「几记」「越来越快还是越来越慢」不需要对照就能认出来，
 而**振幅的绝对值没有对照根本分不出来**，所以不拿它当区分维度。
-`HapticSpecTest` 里「五种波形的形状两两不同」按
+`HapticSpecTest` 里「波形的形状两两不同」按
 `(脉冲数, 有无迸发, 节奏走向)` 三元组断言——它当初正是抓出了
 已收藏与播放/暂停撞形状（都是「2 记匀速」）的问题，那时两者只差振幅，
 而那恰恰是被判定为不可靠的维度。加新反馈时这条会继续拦着。
@@ -725,7 +725,7 @@ adb shell dumpsys vibrator_manager | ag -u 'opPkg: com.nudge.app' | tail -1
 
 ### 振动实验室（仅 debug 包）
 
-设置页「反馈」分组 → `ui/HapticLabScreen.kt`。五种反馈各占一块，
+设置页「反馈」分组 → `ui/HapticLabScreen.kt`。每种反馈各占一块，
 每块有试听按钮、**包络柱状图**和该形状用得上的滑块
 （单脉冲时不显示间隔与曲率——摆出来只会让人以为调了有用）。
 
@@ -752,6 +752,32 @@ LAB 角标与歌词实验室**共用一个**：它要回答的是「现在跑的
 - **下一首**：对任意播放器有效。目标优先网易云，无网易云会话时取第一个 PLAYING 的会话。
 - **收藏**：**仅网易云**。走 custom action 动态查找（匹配 `STAR` 或 name 含 `like`），**不要硬编码 action id**，以适应网易云改版。
 - **播放/暂停**：toggle 语义，默认不绑手势（手势池已够用，绑哪个交给用户）。
+- **显示歌词**：**唯一不经播放器的动作**，只改本机的 `lyricsEnabled`。默认不绑手势。
+
+### 「显示歌词」为什么不走 MediaControlRepository
+
+它是本机 UI 配置的 toggle，不是媒体命令。`ActionDispatcher.dispatch` 在
+调 `repository.execute` **之前**就分流走，`MediaControlRepository` 里两处
+`when` 对它都是 `error("歌词开关不经播放器")`——和收藏那条 `error("收藏使用独立入口")`
+同一个口径：能走到那里就说明分流漏了，应当立刻崩而不是静默发一个媒体键。
+
+仍然产出 `ActionResult`（`LyricsToggled(shown)`）是为了让振动反馈的选择
+保持单一口径（`HapticPalette.idFor` 按结果选波形），否则这一个动作就得在
+dispatcher 里另起一条反馈支路。
+
+`shown` 带的是切换**之后**的状态，因为盲操下歌词是纯视觉的——用户看不见
+屏幕就不知道自己切成了哪一边，所以开/关必须是**两条方向相反的波形**
+（`LYRICS_ON` 间隔收紧、`LYRICS_OFF` 间隔拉开），这是整套反馈里唯一
+必须区分方向的一对。
+
+`toggleLyrics` 用 `runBlocking` 读改写 DataStore，理由同 `ProfileCommandReceiver`：
+调用方之一是广播接收器，`onReceive` 返回后进程可能立即被回收。
+这里「先读后写」是安全的，与收藏那条 toggle 缺陷不同——读的是本应用自己的
+DataStore，不存在外部异步更新的窗口。
+
+设置页「歌词」分组里的勾选框与手势绑定里的「显示歌词」是**同一个开关**，
+两处同名，所以勾选框的 hint 里点明了可以绑手势——不说明关系的话，
+用户会以为手势绑的是另一项设置。
 
 真机实测网易云的 `actions` 位掩码**不含** `ACTION_SET_RATING`，所以收藏只能走 custom action。设计文档 §5.2 里的 `setRating` 写法是早期方案，以代码为准。
 
@@ -785,7 +811,7 @@ adb shell dumpsys media_session | ag -u -o 'description=[^,]*|state=(PLAYING|PAU
 JAVA_HOME=/opt/homebrew/opt/openjdk@17 ./gradlew test
 ```
 
-140 个单元测试，主体在 `GestureRecognizer`——正例（七种手势 × 三档灵敏度）、边界（阈值临界、滑动死区）、负例（斜滑、两指反向、单指滑动、三指降级、指数不符、超时）。**动手势逻辑必须补相应测试**，尤其是防误触的负例。
+144 个单元测试，主体在 `GestureRecognizer`——正例（七种手势 × 三档灵敏度）、边界（阈值临界、滑动死区）、负例（斜滑、两指反向、单指滑动、三指降级、指数不符、超时）。**动手势逻辑必须补相应测试**，尤其是防误触的负例。
 
 预设部分由 `ProfileCodecTest` 覆盖 round-trip 与宽容解码，`ProfileSlotTest` 覆盖槽位号解析。
 
@@ -798,7 +824,7 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@17 ./gradlew test
 
 振动包络由 `HapticSpecTest` 覆盖：形状的**方向性**（加速列间隔单调收紧、
 减速列单调拉开）、**振幅地板**挡住起振阈值以下的脉冲、迸发前有静默且
-**落差足够**、蓄力段刻意不爬满、**五种波形的形状两两不同**、
+**落差足够**、蓄力段刻意不爬满、**波形的形状两两不同**、歌词开关两条方向相反、
 高频反馈足够短。同样断言结构性约束而非具体数值——振动没法自动化测
 （只能上手摸），这一层是唯一的防回归手段。
 
@@ -845,6 +871,17 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@17 ./gradlew test
   `Step{amplitude, duration}` 序列完整打出来（命令与两个坑见「振动反馈」一节）。
   断言各自的形状签名：切歌 1 记、收藏 7 记加速 + 迸发、已收藏 3 记匀速、
   播放/暂停 2 记匀速、失败 3 记减速。
+- 「显示歌词」手势的两个方向各触发一次，断言歌词真的显隐、**曲目信息与播放状态不变**
+  （它不该碰播放器），且两次的振动包络方向相反：
+
+  ```bash
+  adb shell am broadcast -a com.nudge.app.MEDIA \
+    -n com.nudge.app/.action.MediaCommandReceiver --es command toggle_lyrics
+  adb shell dumpsys vibrator_manager | ag -u 'opPkg: com.nudge.app' | tail -1
+  ```
+
+  打开应是「振幅递增 + 间隔 40ms（收紧）」，关闭应是「振幅递减 + 间隔 90ms（拉开）」。
+  只看歌词有没有消失不够——两条波形若写成一样，盲操下就完全分不出切到了哪一边。
 - 振动实验室的覆盖**真的作用到手势反馈**（而非只在试听按钮上）：
   把「下一首」的脉冲个数拖到 12 记 → 返回 → 触发真实切歌 →
   断言 `dumpsys` 里是 12 记而非默认的 1 记 → 点「恢复默认」→ 断言回到 1 记。
