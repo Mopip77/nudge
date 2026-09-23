@@ -149,6 +149,9 @@ fun TrackpadScreen(
                     state = lyricsState,
                     track = track,
                     alignment = config.lyricsAlignment,
+                    // debug 包里跟随实验室的实时调参，release 恒为默认值。
+                    // 见 LyricsAnimOverride：不落盘，杀进程即回默认。
+                    spec = LyricsAnimOverride.current,
                 )
             }
 
@@ -157,6 +160,21 @@ fun TrackpadScreen(
                     text = "需要通知使用权才能控制播放\n点击右上角设置授予",
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
                     fontSize = 14.sp,
+                )
+            }
+
+            // 正在跑实验室参数时的角标。没有它就分不清「刚才那下观感变化
+            // 是参数生效了，还是这首歌本来就长这样」，而调参全靠肉眼比对。
+            // release 恒 false（见 LyricsAnimOverride.isActive），角标不存在。
+            if (LyricsAnimOverride.isActive) {
+                Text(
+                    text = "LAB",
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f),
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(8.dp),
                 )
             }
         }

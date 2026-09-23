@@ -1,5 +1,6 @@
 package com.nudge.app.ui
 
+import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -70,14 +71,46 @@ private const val MAX_INTERVAL_MS = 5000f
  * 若这里另写一份，调出来的参数在真实场景下未必是同样的观感。
  * 下半屏是参数滑块，改一下立刻生效。
  *
- * 参数**只存在内存里**，退出即丢。这是刻意的：歌词动画的好坏没有「因人而异」
- * 的成分，做成用户可持久化的配置只会让线上出现一堆没人能复现的观感问题。
- * 调好之后把值手写回 [LyricsAnimSpec] 的默认值——界面底部的「打印当前参数」
- * 会把一整段可直接粘贴的构造调用打到界面上，省得逐个滑块抄数字。
+ * 改动同时写进 [LyricsAnimOverride]，**返回主界面后真实歌词也跟着变**。
+ * 这是必要的：预览框只有 340dp 高，能看到的行数远少于真实全屏，
+ * 而梯度的观感与可见行数强相关，只在框里调容易看走眼。
+ *
+ * 参数**只存在内存里**，杀进程即回默认，不落盘也不进 `NudgeConfig`。
+ * 歌词动画的好坏没有「因人而异」的成分，做成用户可持久化的配置只会让
+ * 线上出现一堆没人能复现的观感问题。调好之后要把值手写回
+ * [LyricsAnimSpec] 的默认值——界面底部的「打印当前参数」会把一整段
+ * 可直接粘贴的构造调用打到界面上，省得逐个滑块抄数字。
  */
 @Composable
 fun LyricsLabScreen(onBack: () -> Unit) {
-    var spec by remember { mutableStateOf(LyricsAnimSpec.DEFAULT) }
+    // 初值读回上次调的值而不是恒取 DEFAULT：否则来回切主界面／实验室
+    // 每次都从默认重来，刚调好的一组白丢。
+    var spec by remember { mutableStateOf(LyricsAnimOverride.peek() ?: LyricsAnimSpec.DEFAULT) }
+
+    // 是否已经动过参数。只是「进来看一眼」不该点亮主界面的角标——
+    // 角标要回答的是「现在跑的是不是实验室调出来的参数」，
+    // 没动过就还是代码里的默认值，点亮就成了假信号。
+    //
+    // 初值跟随 peek()：之前调过、这次只是再进来看看，那覆盖本就还生效着。
+    var touched by remember { mutableStateOf(LyricsAnimOverride.peek() != null) }
+
+    // 改动同步给主界面。放在一个 LaunchedEffect 而不是每个滑块的 onChange 里：
+    // 滑块有十几个，逐个加调用漏一个就会出现「这一项调了主界面不动」的
+    // 静默不一致，而这种不一致在调参时极难察觉——会被当成参数本身没效果。
+    //
+    // touched 同时作为 key：「恢复默认」会把它置回 false 并 clear()，
+    // 若只 key spec，那次 clear 会被本 effect 立刻重新 set 回去，角标灭不掉。
+    LaunchedEffect(spec, touched) {
+        if (touched) LyricsAnimOverride.set(spec)
+    }
+
+    // 所有参数滑块都走这一个入口，而不是各自 `spec = spec.copy(...)`：
+    // touched 只在这里置位，滑块再多也漏不掉。
+    val updateSpec: ((LyricsAnimSpec) -> LyricsAnimSpec) -> Unit = { transform ->
+        spec = transform(spec)
+        touched = true
+    }
+
     var intervalMs by remember { mutableStateOf(2400f) }
     var currentIndex by remember { mutableIntStateOf(0) }
     var alignment by remember { mutableStateOf(LyricsAlignment.CENTER) }
@@ -149,12 +182,30 @@ fun LyricsLabScreen(onBack: () -> Unit) {
                 onChange = { intervalMs = it },
             )
             LabSlider(
+                label = "整列位移时长",
+                value = spec.settleTweenMs.toFloat(),
+                range = 150f..900f,
+                display = "${spec.settleTweenMs}ms",
+                hint = "所有行共用，同时开始同时结束。错峰靠各行不同的缓动曲线，" +
+                    "不靠时长差——时长也差的话快歌连续换行时下面的行会追不上",
+                onChange = { v -> updateSpec { it.copy(settleTweenMs = v.roundToInt()) } },
+            )
+            LabSlider(
+                label = "淡入淡出延迟",
+                value = spec.fadeDelayMs.toFloat(),
+                range = 0f..600f,
+                display = "${spec.fadeDelayMs}ms",
+                hint = "等位移基本走完再开始对焦。设 0 就是「边移动边对焦」，" +
+                    "两件事挤在一起会显得急。略小于当前行落定时间最顺",
+                onChange = { v -> updateSpec { it.copy(fadeDelayMs = v.roundToInt()) } },
+            )
+            LabSlider(
                 label = "淡入淡出时长",
                 value = spec.fadeAnimMs.toFloat(),
                 range = 80f..800f,
                 display = "${spec.fadeAnimMs}ms",
-                hint = "要短于位移落定的时间，否则会「边移动边对焦」",
-                onChange = { spec = spec.copy(fadeAnimMs = it.roundToInt()) },
+                hint = "延迟结束后这段渐变本身有多长",
+                onChange = { v -> updateSpec { it.copy(fadeAnimMs = v.roundToInt()) } },
             )
 
             SectionTitle("锚点")
@@ -165,50 +216,38 @@ fun LyricsLabScreen(onBack: () -> Unit) {
                 steps = 5,
                 display = "第 ${spec.anchorRow + 1} 行",
                 hint = "上方留 ${spec.anchorRow} 行已唱过的做上下文，其余是预读区",
-                onChange = { spec = spec.copy(anchorRow = it.roundToInt()) },
+                onChange = { v -> updateSpec { it.copy(anchorRow = v.roundToInt()) } },
             )
 
-            SectionTitle("弹簧梯度（沿屏幕自上而下）")
+            SectionTitle("缓动梯度（拖尾自上而下递增）")
             LabSlider(
-                label = "顶部刚度",
-                value = spec.stiffnessTop,
-                range = 10f..400f,
-                display = fmt(spec.stiffnessTop),
-                hint = "越小越软、拖尾越明显",
-                onChange = { spec = spec.copy(stiffnessTop = it) },
+                label = "顶部懒惰度（第 1 行）",
+                value = spec.easeTop,
+                range = 0f..1f,
+                display = fmt(spec.easeTop),
+                hint = "0 = 起步就全速（最干脆）。最上面那行是这趟位移的终点，" +
+                    "该最先到位，所以取小值",
+                onChange = { v -> updateSpec { it.copy(easeTop = v) } },
             )
             LabSlider(
-                label = "底部刚度",
-                value = spec.stiffnessBottom,
-                range = 40f..1200f,
-                display = fmt(spec.stiffnessBottom),
-                hint = "越大越干脆；新进场的行走这一档",
-                onChange = { spec = spec.copy(stiffnessBottom = it) },
-            )
-            LabSlider(
-                label = "顶部阻尼比",
-                value = spec.dampingTop,
-                range = 0.35f..1f,
-                display = fmt(spec.dampingTop),
-                hint = "低于 0.5 会晃两下以上，看着像故障",
-                onChange = { spec = spec.copy(dampingTop = it) },
-            )
-            LabSlider(
-                label = "底部阻尼比",
-                value = spec.dampingBottom,
-                range = 0.35f..1f,
-                display = fmt(spec.dampingBottom),
-                hint = "1 为临界阻尼，不过冲",
-                onChange = { spec = spec.copy(dampingBottom = it) },
+                label = "底部懒惰度（最下一行）",
+                value = spec.easeBottom,
+                range = 0f..1f,
+                display = fmt(spec.easeBottom),
+                hint = "越大起步越慢、后段越赶，「被拖着走」越明显。" +
+                    "与顶部的差要够大，否则相邻行差太小，肉眼会合成一个刚体",
+                onChange = { v -> updateSpec { it.copy(easeBottom = v) } },
             )
             LabSlider(
                 label = "梯度跨度",
                 value = spec.gradientRampLines,
                 range = 1f..14f,
                 display = "${fmt(spec.gradientRampLines)} 行",
-                hint = "从锚点往下数，超出后统一取底部档",
-                onChange = { spec = spec.copy(gradientRampLines = it) },
+                hint = "从屏幕顶边往下数，超出后统一取底部档（最懒）。" +
+                    "太窄则梯度早早跑完、下面一坨一起动；太开则相邻行差太小",
+                onChange = { v -> updateSpec { it.copy(gradientRampLines = v) } },
             )
+            GradientTable(spec)
 
             SectionTitle("清晰度")
             LabSlider(
@@ -217,7 +256,7 @@ fun LyricsLabScreen(onBack: () -> Unit) {
                 range = 0f..20f,
                 display = "${fmt(spec.maxBlurDp)}dp",
                 hint = "峰值要守住「最远处仍认得出字」",
-                onChange = { spec = spec.copy(maxBlurDp = it) },
+                onChange = { v -> updateSpec { it.copy(maxBlurDp = v) } },
             )
             LabSlider(
                 label = "模糊跨度",
@@ -225,7 +264,7 @@ fun LyricsLabScreen(onBack: () -> Unit) {
                 range = 1f..20f,
                 display = "${fmt(spec.blurRampLines)} 行",
                 hint = "与峰值配着调，决定观感的是斜率不只是峰值",
-                onChange = { spec = spec.copy(blurRampLines = it) },
+                onChange = { v -> updateSpec { it.copy(blurRampLines = v) } },
             )
             LabSlider(
                 label = "上方跨度倍率",
@@ -233,7 +272,7 @@ fun LyricsLabScreen(onBack: () -> Unit) {
                 range = 0.3f..2f,
                 display = fmt(spec.upperFadeScale),
                 hint = "1 为上下对称；小于 1 则已唱过的行糊得更快",
-                onChange = { spec = spec.copy(upperFadeScale = it) },
+                onChange = { v -> updateSpec { it.copy(upperFadeScale = v) } },
             )
             LabSlider(
                 label = "近处透明度",
@@ -241,7 +280,7 @@ fun LyricsLabScreen(onBack: () -> Unit) {
                 range = 0.2f..1f,
                 display = fmt(spec.alphaNear),
                 hint = null,
-                onChange = { spec = spec.copy(alphaNear = it) },
+                onChange = { v -> updateSpec { it.copy(alphaNear = v) } },
             )
             LabSlider(
                 label = "最远透明度",
@@ -249,7 +288,7 @@ fun LyricsLabScreen(onBack: () -> Unit) {
                 range = 0.05f..0.8f,
                 display = fmt(spec.alphaFar),
                 hint = null,
-                onChange = { spec = spec.copy(alphaFar = it) },
+                onChange = { v -> updateSpec { it.copy(alphaFar = v) } },
             )
             LabSlider(
                 label = "每行衰减",
@@ -257,7 +296,7 @@ fun LyricsLabScreen(onBack: () -> Unit) {
                 range = 0f..0.15f,
                 display = fmt(spec.alphaStep),
                 hint = null,
-                onChange = { spec = spec.copy(alphaStep = it) },
+                onChange = { v -> updateSpec { it.copy(alphaStep = v) } },
             )
 
             SectionTitle("其他")
@@ -275,7 +314,16 @@ fun LyricsLabScreen(onBack: () -> Unit) {
                 ) {
                     Text("对齐：${alignment.displayName}")
                 }
-                TextButton(onClick = { spec = LyricsAnimSpec.DEFAULT }) {
+                // 不走 updateSpec：这里要的恰恰相反，是把 touched 清掉。
+                // clear() 与 touched=false 必须成对——前者让主界面回到默认值，
+                // 后者既熄灭角标，又阻止上面那个 effect 立刻把覆盖 set 回去。
+                TextButton(
+                    onClick = {
+                        spec = LyricsAnimSpec.DEFAULT
+                        touched = false
+                        LyricsAnimOverride.clear()
+                    }
+                ) {
                     Text("恢复默认")
                 }
                 TextButton(onClick = { snapshot = spec.toSourceSnippet() }) {
@@ -293,6 +341,59 @@ fun LyricsLabScreen(onBack: () -> Unit) {
                 )
             }
         }
+    }
+}
+
+/**
+ * 逐行列出缓动参数与进度采样。
+ *
+ * 加这张表是因为在这上面栽过几次，每次都是「看端点数字觉得没问题」：
+ *
+ * - 40→260 / 0.58→1 那组看着「有梯度」，实际上整个阅读区的阻尼都近临界，
+ *   刚度相邻只差 27（肉眼合成刚体），于是整列就是线性滚动。
+ * - 之后那组方向整个写反了：最上面那行最软最晃，而它本该是最先落定的。
+ * - 再之后是弹簧本身的问题——速度峰值在极早期，观感是「往上拱一下」。
+ *
+ * 所以要把逐行的值摊开，一眼能看出**梯度朝哪个方向**、**相邻行差得够不够**。
+ * 进度采样（25%/50% 时刻走了多少）比端点数字更能反映实际观感。
+ */
+@Composable
+private fun GradientTable(spec: LyricsAnimSpec) {
+    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp)) {
+        Text(
+            text = "屏幕行  懒惰度   ¼时走了  ½时走了",
+            fontSize = 11.sp,
+            fontFamily = FontFamily.Monospace,
+            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
+        )
+        (0..8).forEach { row ->
+            val e = spec.easeAt(row)
+            // 直接采样这一行实际会用的那条曲线，而不是另算一个近似值——
+            // 表里的数字必须和屏幕上跑的是同一条曲线，否则调参就是瞎调。
+            val easing = CubicBezierEasing(e.coerceIn(0f, 1f), 0f, 0.25f, 1f)
+            val isAnchor = row == spec.anchorRow
+            Text(
+                text = "%4d  %7.2f  %6.0f%%  %6.0f%%%s".format(
+                    row, e,
+                    easing.transform(0.25f) * 100f,
+                    easing.transform(0.5f) * 100f,
+                    if (isAnchor) "  ← 当前行" else "",
+                ),
+                fontSize = 11.sp,
+                fontFamily = FontFamily.Monospace,
+                color = if (isAnchor) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f)
+                },
+            )
+        }
+        Text(
+            text = "所有行 ${spec.settleTweenMs}ms 同时结束；越往下越晚发力",
+            fontSize = 10.sp,
+            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.45f),
+            modifier = Modifier.padding(top = 4.dp),
+        )
     }
 }
 
@@ -355,10 +456,8 @@ private fun fmt(v: Float): String =
  */
 private fun LyricsAnimSpec.toSourceSnippet(): String = buildString {
     appendLine("anchorRow = $anchorRow,")
-    appendLine("stiffnessTop = ${fmt(stiffnessTop)}f,")
-    appendLine("stiffnessBottom = ${fmt(stiffnessBottom)}f,")
-    appendLine("dampingTop = ${fmt(dampingTop)}f,")
-    appendLine("dampingBottom = ${fmt(dampingBottom)}f,")
+    appendLine("easeTop = ${fmt(easeTop)}f,")
+    appendLine("easeBottom = ${fmt(easeBottom)}f,")
     appendLine("gradientRampLines = ${fmt(gradientRampLines)}f,")
     appendLine("maxBlurDp = ${fmt(maxBlurDp)}f,")
     appendLine("blurRampLines = ${fmt(blurRampLines)}f,")
@@ -366,5 +465,7 @@ private fun LyricsAnimSpec.toSourceSnippet(): String = buildString {
     appendLine("alphaNear = ${fmt(alphaNear)}f,")
     appendLine("alphaFar = ${fmt(alphaFar)}f,")
     appendLine("alphaStep = ${fmt(alphaStep)}f,")
-    append("fadeAnimMs = $fadeAnimMs,")
+    appendLine("settleTweenMs = $settleTweenMs,")
+    appendLine("fadeAnimMs = $fadeAnimMs,")
+    append("fadeDelayMs = $fadeDelayMs,")
 }

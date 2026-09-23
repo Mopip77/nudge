@@ -1,10 +1,11 @@
 package com.nudge.app.ui
 
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.Easing
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -21,6 +22,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -51,6 +53,29 @@ import com.nudge.app.lyrics.LyricsState
 import com.nudge.app.lyrics.indexAt
 import com.nudge.app.media.TrackInfo
 import kotlinx.coroutines.delay
+
+/**
+ * 按「懒惰度」造一条缓动曲线。[ease] 越大起步越慢、后段越赶。
+ *
+ * 形状是 `cubic-bezier(ease, 0, 0.25, 1)`：
+ *
+ * - 第一个控制点的 y 恒为 **0**，x 就是 [ease]。x 越大，曲线在起点附近
+ *   越平——起步速度越慢，「被前面的行拖着走」的感觉越强。
+ * - 第二个控制点固定 (0.25, 1)，让所有行都在同一时刻收尾、且收得很软，
+ *   不会出现某一行最后一下突然顿住。
+ *
+ * **这条曲线单调不减，位移只会逼近目标、永不越过**。这正是与弹簧最本质的
+ * 差别：弹簧是 PID 式的，快速拉到目标再来回震荡，越软的行震得越厉害；
+ * 而这里要的是「趋近于 0」，各行只是趋近的快慢不同。震荡在盲操场景里
+ * 尤其糟——焦点行晃一下会被读成「歌词跳了」。
+ *
+ * 用 remember 缓存：CubicBezierEasing 会在内部做二分求解，
+ * 每帧新建一个既浪费也让 Compose 误判参数变化。
+ */
+@Composable
+private fun easingFor(ease: Float): Easing = remember(ease) {
+    CubicBezierEasing(ease.coerceIn(0f, 1f), 0f, 0.25f, 1f)
+}
 
 /**
  * 歌词滚动的刷新间隔。
@@ -244,8 +269,42 @@ internal fun LyricsScroller(
         // 这里**不做动画**：整列共用一条动画曲线正是"所有行同时同速平移"的根源。
         // 它是静态目标，由每行各自的弹簧去追（见 LyricRow），
         // 行与行之间的相位差就是错峰效果。
+        //
+        // 这个量在歌曲开头（windowStart 恒为 0）随换行单调减小，
+        // 但窗口一旦开始滑动它就变成常数 —— 见 LyricRow 里对
+        // absoluteIndex 的处理，弹簧不能只靠它驱动。
         val anchorTopPx = fallbackPx * spec.anchorRow
         val targetOffsetY = anchorTopPx - topOffsetPx
+
+        // 窗口滑动的补偿量，**算在这里而不是每行各自算**。
+        //
+        // 放在 LyricRow 里有两个病：
+        //
+        // 1. 每行的 lastWindowStart 是 remember 出来的，而**新进窗口的行**
+        //    初值就等于当前 windowStart，于是它拿不到补偿，一出现就在终点
+        //    位置上，旁边的行却还在动——整列对不齐，看着就是「闪一下」。
+        // 2. 补偿写在 LaunchedEffect 里的话，effect 在布局提交之后才跑，
+        //    重新排版那一帧已经画出去了。
+        //
+        // 提到父级、且在组合期同步累加，整列共用同一个补偿量，
+        // 新行也从同一个起点开始，才不会有错位。
+        var lastWindowStart by remember { mutableIntStateOf(windowStart) }
+        var pendingShift by remember { mutableStateOf(0f) }
+        // 单调递增的代号，每产生一次新补偿就 +1。
+        //
+        // 各行的接手 effect 必须 key 在这个代号上，**不能 key 在 pendingShift**：
+        // 父级把 pendingShift 清零时会让 key 变化，effect 重启，
+        // 正在跑的 animateTo 被取消，shiftAnim 就停在半路回不到 0；
+        // 下一次换行又叠一层，位移逐行累积——表现为整列越来越往下沉，
+        // 当前行离开锚点行、顶上空出一大片。
+        var shiftEpoch by remember { mutableIntStateOf(0) }
+        if (windowStart != lastWindowStart) {
+            // 叠加而非覆盖：连续快速换行时上一次还没走完，
+            // 直接赋值会把残余位移抹掉。
+            pendingShift += (windowStart - lastWindowStart) * fallbackPx
+            lastWindowStart = windowStart
+            shiftEpoch++
+        }
 
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -279,6 +338,12 @@ internal fun LyricsScroller(
                         offset = offset,
                         screenRow = offset + spec.anchorRow,
                         targetOffsetY = targetOffsetY,
+                        // 本帧刚产生的窗口补偿量（父级统一算好），
+                        // 各行据此在同一起点上开始这趟位移。
+                        // 清零由父级负责——交给各行清的话，第一行清掉之后
+                        // 后面的行就读不到了，整列又对不齐。
+                        pendingShift = pendingShift,
+                        shiftEpoch = shiftEpoch,
                         alignment = alignment,
                         spec = spec,
                         onHeightMeasured = { rowHeights[index] = it },
@@ -286,12 +351,22 @@ internal fun LyricsScroller(
                 }
             }
         }
+
+        // 各行已经把 pendingShift 算进本帧的 translationY、也已经在自己的
+        // shiftAnim 里接手了同样的量，这里把它清零完成交接，屏幕位置不变。
+        //
+        // key 用 shiftEpoch 而不是 pendingShift：后者会让「清零」这个动作
+        // 本身再触发一次 effect 重启。放在 Column **之后**是因为组合自上而下，
+        // 必须等所有行都读过再清。
+        LaunchedEffect(shiftEpoch) {
+            if (pendingShift != 0f) pendingShift = 0f
+        }
     }
 }
 
 /**
  * [offset]：相对当前行的**有向**距离，负数表示在当前行上方，管清晰度。
- * [screenRow]：动画结束后落在屏幕上的第几行（0 为顶边），管弹簧。
+ * [screenRow]：动画结束后落在屏幕上的第几行（0 为顶边），管缓动曲线。
  */
 @Composable
 private fun LyricRow(
@@ -300,41 +375,85 @@ private fun LyricRow(
     offset: Int,
     screenRow: Int,
     targetOffsetY: Float,
+    pendingShift: Float,
+    shiftEpoch: Int,
     alignment: LyricsAlignment,
     spec: LyricsAnimSpec,
     onHeightMeasured: (Int) -> Unit,
 ) {
-    // 每行各自追 targetOffsetY，刚度与阻尼按**屏幕位置**插值：
-    // 越靠屏幕上方越软越弹，越靠下方越硬越稳。相位差（错峰）与过冲（阻尼）
-    // 都由此产生，不需要额外的 delay 或第二套动画。
+    // 每行各自追 targetOffsetY，**时长相同、缓动曲线不同**：
+    // 越靠屏幕上方起步越干脆，越靠下方起步越慢、后段才赶上来。
+    // 滑动途中行距会先拉开再收拢，这就是「被拖着走」的观感来源。
     //
-    // 基准从「距当前行的无向距离」换成屏幕位置，是这版的核心修正：
-    // 前者让当前行上下两侧对称地软，于是最上面那行——它明明是最先该
-    // 到位、被后面的行推着走的——反而带着和新进场的行一样的拖尾。
-    // 整列实际只往上走一个方向，阻尼梯度就该沿这个方向单调排布。
-    val stiffness = spec.stiffnessAt(screenRow)
-    val damping = spec.dampingAt(screenRow)
+    // 方向的依据：整列往上走，最上面那行是这趟位移里走得最久、最先该
+    // 落定的；越靠下的行越是被前面的行拖着走。方向写反过一版（顶懒底干脆），
+    // 表现是最上面那行最晃，而它恰恰应该最稳。
+    //
+    // 时长对所有行相同是硬约束：若下面的行时长也更长，快歌连续换行时
+    // 它们会追不上，位移累积起来越滚越偏。
+    val rowEasing = easingFor(spec.easeAt(screenRow))
+    val scrollSpec = tween<Float>(spec.settleTweenMs, easing = rowEasing)
+
+    // 窗口滑动的补偿量。
+    //
+    // targetOffsetY 只在歌曲开头随换行变化；一旦 windowStart 开始跟着
+    // 当前行走，它就冻结成常数（上方行数恒为 rowsAbove）。此时换行带来的
+    // 位移全部由「Column 重新排版」完成 —— 排版是瞬时的，没有动画，
+    // 表现就是「高亮行直接闪现到上一行」。
+    //
+    // 所以窗口每前进 n 行，就给这一行补 +n 个行高的反向位移，
+    // 再按各自的缓动曲线回到 0：视觉上等价于整列平滑地往上滚了 n 行。
+    // 歌曲开头 windowStart 恒为 0，这一项恒为 0，走的仍是原来的路径。
+    // 窗口滑动的补偿量由父级统一算好传进来（见 LyricsScroller）。
+    //
+    // 本行要做的是**接手**：把 pendingShift 加进自己的 shiftAnim 并归零，
+    // 再按自己那条缓动曲线趋近 0。两者相加渲染，交接时屏幕位置不变。
+    //
+    // 为什么补偿不能只放在 LaunchedEffect 里算：effect 在组合与布局提交
+    // **之后**才跑，于是帧序会变成「窗口变 → 整列瞬间上跳一行并画出去 →
+    // 下一帧才按回来 → 再开始动画」，那一帧的错位就是用户看到的
+    // 「所有字闪一下、像重新 fix position」。父级在组合期同步累加，
+    // pendingShift 当帧就参与渲染，整列纹丝不动。
+    // key 必须是 shiftEpoch（单调递增的代号），**不能是 pendingShift**：
+    // 父级清零时 pendingShift 会变，effect 跟着重启，正在跑的 animateTo
+    // 被取消，shiftAnim 停在半路回不到 0。下一次换行再叠一层，
+    // 位移就逐行累积——整列越来越往下沉，当前行离开锚点行、顶上空出一片。
+    val shiftAnim = remember { Animatable(0f) }
+    LaunchedEffect(shiftEpoch) {
+        if (pendingShift != 0f) {
+            shiftAnim.snapTo(shiftAnim.value + pendingShift)
+            shiftAnim.animateTo(targetValue = 0f, animationSpec = scrollSpec)
+        }
+    }
 
     val offsetAnim = remember { Animatable(targetOffsetY) }
-    // 首帧（容器尚未测量，targetOffsetY 还是基于估算值）不该看到弹簧从 0 弹到位，
+    // 首帧（容器尚未测量，targetOffsetY 还是基于估算值）不该看到位移从 0 走到位，
     // 那会让歌词每次出现都先抖一下。snapTo 只在这一帧生效，之后都走 animateTo。
     var settled by remember { mutableStateOf(false) }
-    LaunchedEffect(targetOffsetY, stiffness, damping) {
+    LaunchedEffect(targetOffsetY, scrollSpec) {
         if (!settled) {
             offsetAnim.snapTo(targetOffsetY)
             settled = true
         } else {
-            offsetAnim.animateTo(
-                targetValue = targetOffsetY,
-                animationSpec = spring(dampingRatio = damping, stiffness = stiffness),
-            )
+            // 与 shiftAnim 用同一个 scrollSpec。这条路径只在歌曲开头
+            // （窗口还没滑动）走，但两段的观感必须一致，
+            // 否则唱到第 6 行时手感会突然变一下。
+            offsetAnim.animateTo(targetOffsetY, animationSpec = scrollSpec)
         }
     }
 
     // 统一字号后，当前行与其余行的区分**全部**由这里的透明度和下面的模糊承担。
+    //
+    // delayMillis 让清晰度的变化**等位移基本走完再开始**：两件事同时进行时
+    // 是「一边往上滚一边对焦」，挤在一起显得急。延迟略小于位移落定时间，
+    // 两段稍有交叠而不是完全排队——完全排队会有个能察觉的停顿。
     val animatedAlpha by animateFloatAsState(
         targetValue = spec.alphaAt(offset, isCurrent),
-        animationSpec = tween(spec.fadeAnimMs, easing = FastOutSlowInEasing),
+        animationSpec = tween(
+            durationMillis = spec.fadeAnimMs,
+            delayMillis = spec.fadeDelayMs,
+            easing = FastOutSlowInEasing,
+        ),
         label = "lyricAlpha",
     )
 
@@ -348,10 +467,16 @@ private fun LyricRow(
     } else {
         spec.blurDpAt(offset).dp
     }
-    // 模糊也要过渡：换行时直接跳到 0 是整个"生硬感"里最刺眼的一跳
+    // 模糊也要过渡：换行时直接跳到 0 是整个"生硬感"里最刺眼的一跳。
+    // 延迟与 alpha 完全一致——两者是同一件事（建立焦点）的两个侧面，
+    // 错开会让字先变清晰再去掉模糊，像对焦对了两次。
     val animatedBlur by animateDpAsState(
         targetValue = blurRadius,
-        animationSpec = tween(spec.fadeAnimMs, easing = FastOutSlowInEasing),
+        animationSpec = tween(
+            durationMillis = spec.fadeAnimMs,
+            delayMillis = spec.fadeDelayMs,
+            easing = FastOutSlowInEasing,
+        ),
         label = "lyricBlur",
     )
 
@@ -369,7 +494,15 @@ private fun LyricRow(
             // 逐行位移放在行容器上而不是 Text 上：Text 外面还有 padding，
             // 挂在内层会让位移与模糊的裁切边界相互作用，远处行回弹时边缘发虚。
             // graphicsLayer 的位移走绘制阶段，不触发重组或重测量。
-            .graphicsLayer { translationY = offsetAnim.value },
+            // 三段相加：
+            // - offsetAnim：歌曲开头那段（窗口还没滑动时）
+            // - shiftAnim：窗口滑动后的每一次换行
+            // - pendingShift：本帧刚产生、effect 还没接手的补偿量。
+            //   少了它，窗口变化那一帧整列会先跳到终点再被按回来，
+            //   就是「所有字闪一下」。
+            .graphicsLayer {
+                translationY = offsetAnim.value + shiftAnim.value + pendingShift
+            },
         contentAlignment = Alignment.Center,
     ) {
         Text(
@@ -395,14 +528,22 @@ private fun LyricRow(
             lineHeight = FONT_SIZE * 1.3f,
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = SIDE_PADDING, vertical = 6.dp)
-                // 零半径时不要挂 blur：BlurNode 无论半径多少都 clip=true
-                // （见 Compose BlurNode: `clip = maskShape != null`），
-                // 当前行半径恒为 0，挂着只会白白引入一个裁切边界，
-                // 把恰好排满整行的那一折行首尾字切掉。
+                // blur 必须排在 padding **之前**（即更外层、作用于整行宽度）。
+                //
+                // BlurNode 恒 clip=true，裁切边界就是它自己那一层的排版矩形。
+                // 排在 padding 之后时，那个矩形已经被 SIDE_PADDING 内缩过，
+                // 于是模糊光晕在距边缘 SIDE_PADDING 处被硬切一刀——
+                // 居中对齐时短句离边界远，看不出来；靠左对齐时每行行首都贴着
+                // 这条边界，远处那些糊得厉害的行左边就像被竖着裁掉一块。
+                //
+                // 挪到外层后光晕有整行宽度可以铺开，代价是极长的折行首尾字
+                // 仍可能触到容器边——但那已是整行宽度，比内缩一个 padding 宽得多。
                 .then(
+                    // 零半径时不要挂 blur：半径 0 也照样裁，挂着只会白白
+                    // 引入一个裁切边界。当前行半径恒为 0。
                     if (animatedBlur > 0.dp) Modifier.blur(animatedBlur) else Modifier
                 )
+                .padding(horizontal = SIDE_PADDING, vertical = 6.dp)
                 // alpha 必须在 blur 之后（即更内层）：模糊作用于已绘制内容，
                 // 反过来会先被 alpha 压暗再模糊，远处行几乎看不见
                 .graphicsLayer { this.alpha = animatedAlpha },
