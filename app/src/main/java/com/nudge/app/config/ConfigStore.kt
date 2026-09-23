@@ -18,6 +18,9 @@ import kotlinx.coroutines.flow.map
 enum class ActionType(val displayName: String) {
     NEXT_TRACK("下一首"),
     LIKE("收藏"),
+    // 默认不绑任何手势：播放/暂停误触代价虽低（可逆、听得见），但手势池已经够用，
+    // 绑哪个交给用户自己在设置页决定。
+    PLAY_PAUSE("播放/暂停"),
 }
 
 enum class ThemeMode(val displayName: String) {
@@ -60,9 +63,15 @@ data class NudgeConfig(
 
     companion object {
         val DEFAULT = NudgeConfig(
+            // 每个 ActionType 都要显式出现，包括绑定为空的。
+            // 读取侧（ConfigStore.config、ProfileCodec.decode）都按 ActionType.entries
+            // 全量构造 map，「缺 key」与「空集」在那里等价，但对 equals 不等价——
+            // 漏写会让 round-trip 出来的 config 多一个空集键而与 DEFAULT 判不相等。
             bindings = mapOf(
                 ActionType.NEXT_TRACK to setOf(Gesture.TWO_FINGER_DOUBLE_TAP),
                 ActionType.LIKE to setOf(Gesture.THREE_FINGER_DOUBLE_TAP),
+                // 播放/暂停默认不绑：手势池已够用，绑哪个交给用户决定
+                ActionType.PLAY_PAUSE to emptySet(),
             ),
             sensitivity = Sensitivity.STANDARD,
             themeMode = ThemeMode.SYSTEM,

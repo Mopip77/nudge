@@ -2,6 +2,7 @@ package com.nudge.app.gesture
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -344,5 +345,161 @@ class GestureRecognizerTest {
         }
         assertNull(threeFingerTap(startTime = 0))
         assertEquals(Gesture.THREE_FINGER_DOUBLE_TAP, threeFingerTap(startTime = 300))
+    }
+
+    // —— 两指竖直滑动 ——
+
+    /**
+     * 构造一次两指滑动：两指同时按下，各自走 [dy] / [dx]，再抬起。
+     *
+     * 位移分若干个 MOVE 走完而非一步到位，贴近真实触摸流；识别只看首末位置，
+     * 但分步能顺带验证中途不会提前误触发。
+     */
+    private fun GestureRecognizer.twoFingerSwipe(
+        dy: Float,
+        dx: Float = 0f,
+        dy2: Float? = null,
+        startTime: Long = 0L,
+        steps: Int = 4,
+    ): Gesture? {
+        val y2Delta = dy2 ?: dy
+        var result: Gesture? = null
+        onTouchEvent(TouchEvent(TouchEventType.DOWN, 0, 100f, 500f, startTime, 1))
+        onTouchEvent(TouchEvent(TouchEventType.DOWN, 1, 200f, 500f, startTime + 10, 2))
+        for (s in 1..steps) {
+            val f = s.toFloat() / steps
+            val t = startTime + 20 + s * 20L
+            onTouchEvent(TouchEvent(TouchEventType.MOVE, 0, 100f + dx * f, 500f + dy * f, t, 2))
+                ?.let { result = it }
+            onTouchEvent(TouchEvent(TouchEventType.MOVE, 1, 200f + dx * f, 500f + y2Delta * f, t, 2))
+                ?.let { result = it }
+        }
+        val endT = startTime + 20 + steps * 20L + 10
+        onTouchEvent(TouchEvent(TouchEventType.UP, 0, 100f + dx, 500f + dy, endT, 1))
+            ?.let { result = it }
+        onTouchEvent(TouchEvent(TouchEventType.UP, 1, 200f + dx, 500f + y2Delta, endT + 10, 0))
+            ?.let { result = it }
+        return result
+    }
+
+    @Test
+    fun `两指上滑触发`() {
+        // 标准档 swipeMinDistanceDp=60，density=1f 故等于 60px
+        assertEquals(Gesture.TWO_FINGER_SWIPE_UP, recognizer().twoFingerSwipe(dy = -80f))
+    }
+
+    @Test
+    fun `两指下滑触发`() {
+        assertEquals(Gesture.TWO_FINGER_SWIPE_DOWN, recognizer().twoFingerSwipe(dy = 80f))
+    }
+
+    /**
+     * 死区：位移超过 moveToleranceDp(24) 但不到 swipeMinDistanceDp(60)。
+     * 点击类已被否决，滑动又不够格，应当什么都不触发——
+     * 这正是留死区的目的，宁可不触发也不要触发错。
+     */
+    @Test
+    fun `位移落在死区内不触发任何手势`() {
+        assertNull(recognizer().twoFingerSwipe(dy = -40f))
+    }
+
+    /** 横向偏移过大说明在斜划，不算竖直滑动。标准档 swipeMaxCrossDp=70。 */
+    @Test
+    fun `斜向滑动不触发`() {
+        assertNull(recognizer().twoFingerSwipe(dy = -80f, dx = 120f))
+    }
+
+    /** 两指反向（一上一下）是缩放之类的动作，不是滑动。 */
+    @Test
+    fun `两指反向移动不触发`() {
+        assertNull(recognizer().twoFingerSwipe(dy = -80f, dy2 = 80f))
+    }
+
+    /** 一根划够、另一根几乎没动，更像握持时的单指误划。 */
+    @Test
+    fun `仅一指划够距离不触发`() {
+        assertNull(recognizer().twoFingerSwipe(dy = -80f, dy2 = -5f))
+    }
+
+    /** 单指滑动不在支持之列，只认两指。 */
+    @Test
+    fun `单指滑动不触发`() {
+        val r = recognizer()
+        r.onTouchEvent(TouchEvent(TouchEventType.DOWN, 0, 100f, 500f, 0, 1))
+        r.onTouchEvent(TouchEvent(TouchEventType.MOVE, 0, 100f, 400f, 40, 1))
+        assertNull(r.onTouchEvent(TouchEvent(TouchEventType.UP, 0, 100f, 400f, 60, 0)))
+    }
+
+    /**
+     * 三指滑动不应被降级识别成两指滑动——batchPeakFingers 要求恰好等于 2。
+     * 否则三指手势会在中途抬起一指时意外产出两指滑动。
+     */
+    @Test
+    fun `三指滑动不触发两指滑动`() {
+        val r = recognizer()
+        r.onTouchEvent(TouchEvent(TouchEventType.DOWN, 0, 100f, 500f, 0, 1))
+        r.onTouchEvent(TouchEvent(TouchEventType.DOWN, 1, 200f, 500f, 10, 2))
+        r.onTouchEvent(TouchEvent(TouchEventType.DOWN, 2, 300f, 500f, 20, 3))
+        for (s in 1..4) {
+            val y = 500f - 20f * s
+            val t = 40L + s * 20
+            r.onTouchEvent(TouchEvent(TouchEventType.MOVE, 0, 100f, y, t, 3))
+            r.onTouchEvent(TouchEvent(TouchEventType.MOVE, 1, 200f, y, t, 3))
+            r.onTouchEvent(TouchEvent(TouchEventType.MOVE, 2, 300f, y, t, 3))
+        }
+        var result: Gesture? = null
+        r.onTouchEvent(TouchEvent(TouchEventType.UP, 0, 100f, 420f, 140, 2))?.let { result = it }
+        r.onTouchEvent(TouchEvent(TouchEventType.UP, 1, 200f, 420f, 150, 1))?.let { result = it }
+        r.onTouchEvent(TouchEvent(TouchEventType.UP, 2, 300f, 420f, 160, 0))?.let { result = it }
+        assertNull(result)
+    }
+
+    /**
+     * 连续两次滑动不能凑成一次「两指双击」。
+     *
+     * 一次两指滑动同样满足「两指按下又抬起」，若滑动被记进双击累积，
+     * 第二次滑动收尾时会先命中双击分支。
+     */
+    @Test
+    fun `连续两次滑动不产生两指双击`() {
+        val r = recognizer()
+        assertEquals(Gesture.TWO_FINGER_SWIPE_UP, r.twoFingerSwipe(dy = -80f, startTime = 0))
+        assertEquals(Gesture.TWO_FINGER_SWIPE_UP, r.twoFingerSwipe(dy = -80f, startTime = 200))
+    }
+
+    /** 滑动幅度大时点击类必须全部否决，不能既算滑动又算双击。 */
+    @Test
+    fun `滑动后不影响后续双击判定`() {
+        val r = recognizer()
+        assertEquals(Gesture.TWO_FINGER_SWIPE_UP, r.twoFingerSwipe(dy = -80f, startTime = 0))
+        // 紧接着一次正常两指轻点，不该因为上一批的残留直接成双击
+        assertNull(r.tap(2, startTime = 400))
+        assertEquals(Gesture.TWO_FINGER_DOUBLE_TAP, r.tap(2, startTime = 600))
+    }
+
+    /** 三档灵敏度都要能识别滑动，阈值不同但方向性一致。 */
+    @Test
+    fun `三档灵敏度均可识别滑动`() {
+        for (s in Sensitivity.entries) {
+            assertEquals(
+                "档位 $s 上滑失败",
+                Gesture.TWO_FINGER_SWIPE_UP,
+                recognizer(s).twoFingerSwipe(dy = -(s.params.swipeMinDistanceDp + 20f)),
+            )
+        }
+    }
+
+    /**
+     * 不变式：各档的 swipeMinDistanceDp 必须大于 moveToleranceDp，死区才存在。
+     * 两者相等时手抖越过容差就会立刻判成滑动。
+     */
+    @Test
+    fun `各档滑动阈值都大于移动容差`() {
+        for (s in Sensitivity.entries) {
+            assertTrue(
+                "档位 $s 的 swipeMinDistanceDp 必须 > moveToleranceDp",
+                s.params.swipeMinDistanceDp > s.params.moveToleranceDp,
+            )
+        }
     }
 }

@@ -9,9 +9,10 @@ import kotlin.math.max
  * 纯 Kotlin 实现，不依赖任何 Android 类，可在 JVM 上单元测试。
  * 非线程安全，调用方需保证串行调用（UI 线程天然满足）。
  *
- * 识别两类手势：
+ * 识别三类手势：
  * 1. N 指双击——N 指同时按下抬起两次
  * 2. N 指长按 + 一指单击——N 指按住超过阈值后，额外一指 down-up
+ * 3. 两指竖直滑动——两指同时按下、同向竖直移动超过阈值
  *
  * @param params 判定参数，来自 [Sensitivity]
  * @param densityDpi 屏幕密度，用于把 dp 容差换算为像素；测试中传 1f
@@ -21,6 +22,8 @@ class GestureRecognizer(
     private val densityDpi: Float,
 ) {
     private val moveTolerancePx = params.moveToleranceDp * densityDpi
+    private val swipeMinDistancePx = params.swipeMinDistanceDp * densityDpi
+    private val swipeMaxCrossPx = params.swipeMaxCrossDp * densityDpi
 
     /** 当前这一「批」触摸的状态。一批 = 从首指按下到全部抬起。 */
     private var batchStartMs = 0L
@@ -38,6 +41,21 @@ class GestureRecognizer(
     private var batchMoveInvalid = false
     private val downPositions = mutableMapOf<Int, Pair<Float, Float>>()
     private val downTimes = mutableMapOf<Int, Long>()
+
+    /**
+     * 每根手指最后一次出现的位置，用来算滑动位移。
+     *
+     * 与 [downPositions] 分开维护且**在抬起时不删除**：滑动判定发生在最后一根手指
+     * 抬起的那一刻，此时先抬起的那根手指若已被移除，就只剩一根手指的位移可算，
+     * 「两指同向」这个核心条件便无从验证。整批结束时由 [resetBatch] 统一清。
+     */
+    private val lastPositions = mutableMapOf<Int, Pair<Float, Float>>()
+
+    /** 本批参与过的手指按下位置，同样跨抬起保留，用于与 [lastPositions] 求差。 */
+    private val batchDownPositions = mutableMapOf<Int, Pair<Float, Float>>()
+
+    /** 本批是否已产出滑动手势，避免同一批里重复触发。 */
+    private var batchProducedSwipe = false
 
     /**
      * 上一批已完成的轻点，用于组成双击。
@@ -84,8 +102,11 @@ class GestureRecognizer(
         batchInvalid = false
         batchMoveInvalid = false
         batchProducedHoldTap = false
+        batchProducedSwipe = false
         downPositions.clear()
         downTimes.clear()
+        lastPositions.clear()
+        batchDownPositions.clear()
         lastTapFingers = 0
         lastTapEndMs = Long.MIN_VALUE
         lastHoldTapFireMs = null
@@ -108,6 +129,10 @@ class GestureRecognizer(
             batchInvalid = false
             batchMoveInvalid = false
             batchProducedHoldTap = false
+            batchProducedSwipe = false
+            // 上一批的位置残留会污染本批的位移计算，开批时清掉。
+            lastPositions.clear()
+            batchDownPositions.clear()
         }
         // 超出同时性窗口落下的手指，说明不是「同时按下」，据此否决双击。
         // 注意：这不应连带否决「长按+单击」——底座先按住、另一指晚落下正是
@@ -120,10 +145,16 @@ class GestureRecognizer(
         }
         downPositions[event.pointerId] = event.x to event.y
         downTimes[event.pointerId] = event.timeMs
+        batchDownPositions[event.pointerId] = event.x to event.y
+        lastPositions[event.pointerId] = event.x to event.y
         batchPeakFingers = max(batchPeakFingers, event.activePointerCount)
     }
 
     private fun onMove(event: TouchEvent) {
+        // 位置要无条件记录：即使这根手指已经超出容差（点击类已否决），
+        // 它的位移仍是滑动判定的输入。
+        lastPositions[event.pointerId] = event.x to event.y
+
         val start = downPositions[event.pointerId] ?: return
         if (abs(event.x - start.first) > moveTolerancePx ||
             abs(event.y - start.second) > moveTolerancePx
@@ -134,6 +165,10 @@ class GestureRecognizer(
     }
 
     private fun onUp(event: TouchEvent): Gesture? {
+        // 抬起时也要更新位置：最后一根手指的 UP 往往带着比最后一个 MOVE
+        // 更靠后的坐标，漏掉它会少算一截位移。
+        lastPositions[event.pointerId] = event.x to event.y
+
         val holdTap = tryHoldTap(event)
         if (holdTap != null) {
             downPositions.remove(event.pointerId)
@@ -148,6 +183,16 @@ class GestureRecognizer(
         // 全部手指已抬起，这一批结束
         val producedHoldTap = batchProducedHoldTap
         batchProducedHoldTap = false
+
+        // 滑动判定必须在双击判定之前：一次两指滑动同样满足「两指按下又抬起」，
+        // 若先走双击分支，它会被记为 lastTap，与下一次滑动凑成一次「两指双击」。
+        val swipe = trySwipe()
+        if (swipe != null) {
+            // 滑动不参与双击累积，否则连续两次滑动会额外触发一次双击
+            lastTapFingers = 0
+            lastTapEndMs = Long.MIN_VALUE
+            return swipe
+        }
 
         val fingers = batchPeakFingers
         val heldTooLong = event.timeMs - batchStartMs > params.longPressMs
@@ -205,6 +250,52 @@ class GestureRecognizer(
         lastHoldTapFireMs = event.timeMs
         batchProducedHoldTap = true
         return gesture
+    }
+
+    /**
+     * 尝试把本批识别为「两指竖直滑动」。在最后一根手指抬起时调用。
+     *
+     * 判定条件全部满足才产出：
+     * 1. 本批恰好两根手指（`batchPeakFingers == 2`）——三指滑动不在支持之列，
+     *    且要求恰好等于而非 ≥，否则三指滑动会被降级识别成两指滑动
+     * 2. 两指都是在同时性窗口内按下的（`!batchInvalid` 中的同时性部分单独判断）
+     * 3. 两指竖直位移**同向**且都超过 [swipeMinDistancePx]
+     * 4. 两指横向位移都不超过 [swipeMaxCrossPx]
+     *
+     * 条件 3 的「都超过」而非「平均超过」是刻意的：一根手指划够、另一根几乎没动
+     * 更像是握持时的单指误划，不该算作双指滑动。
+     */
+    private fun trySwipe(): Gesture? {
+        if (batchProducedSwipe) return null
+        if (batchProducedHoldTap) return null
+        if (batchPeakFingers != 2) return null
+        // 两指必须是「同时」按下的。这里复用 multiTouchSlopMs 的语义，但不能直接用
+        // batchInvalid——后者在位移超容差时也会被置位，而滑动本来就要求大位移。
+        if (batchDownPositions.size != 2) return null
+
+        val ids = batchDownPositions.keys.toList()
+        val deltas = ids.map { id ->
+            val start = batchDownPositions[id] ?: return null
+            val end = lastPositions[id] ?: return null
+            (end.first - start.first) to (end.second - start.second)
+        }
+
+        if (deltas.any { abs(it.first) > swipeMaxCrossPx }) return null
+        if (deltas.any { abs(it.second) < swipeMinDistancePx }) return null
+
+        val allUp = deltas.all { it.second <= -swipeMinDistancePx }
+        val allDown = deltas.all { it.second >= swipeMinDistancePx }
+
+        batchProducedSwipe = true
+        return when {
+            allUp -> Gesture.TWO_FINGER_SWIPE_UP
+            allDown -> Gesture.TWO_FINGER_SWIPE_DOWN
+            // 两指反向（一上一下）——不是滑动，是缩放之类的动作，不产出
+            else -> {
+                batchProducedSwipe = false
+                null
+            }
+        }
     }
 
     private fun doubleTapFor(fingers: Int): Gesture? = when (fingers) {

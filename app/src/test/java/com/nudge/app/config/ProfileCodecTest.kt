@@ -32,6 +32,8 @@ class ProfileCodecTest {
 
     @Test
     fun `一个动作绑多个手势 round-trip 后保持`() {
+        // 每个 ActionType 都要给出条目：解码侧按 ActionType.entries 全量构造，
+        // 这里漏写哪个，round-trip 回来就会多一个空集键而判不相等。
         val config = NudgeConfig.DEFAULT.copy(
             bindings = mapOf(
                 ActionType.NEXT_TRACK to setOf(
@@ -40,6 +42,7 @@ class ProfileCodecTest {
                     Gesture.THREE_FINGER_HOLD_TAP,
                 ),
                 ActionType.LIKE to setOf(Gesture.THREE_FINGER_DOUBLE_TAP),
+                ActionType.PLAY_PAUSE to setOf(Gesture.TWO_FINGER_SWIPE_UP),
             )
         )
         val original = StoredProfile("多绑", config)

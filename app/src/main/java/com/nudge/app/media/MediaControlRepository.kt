@@ -122,10 +122,21 @@ class MediaControlRepository(private val context: Context) {
                 MediaCommand.PLAY -> controller.transportControls.play()
                 MediaCommand.PAUSE -> controller.transportControls.pause()
                 MediaCommand.PLAY_PAUSE -> {
-                    // 让播放器自己判断切换方向，避免读取尚未更新的状态后做出错误决定。
-                    val down = controller.dispatchMediaButtonEvent(KeyEvent(KeyEvent.ACTION_DOWN, keyCode))
-                    val up = controller.dispatchMediaButtonEvent(KeyEvent(KeyEvent.ACTION_UP, keyCode))
-                    if (!down || !up) return ActionResult.Failed("播放器未接受媒体按键")
+                    // 必须读状态后调 play()/pause()，不能发 KEYCODE_MEDIA_PLAY_PAUSE。
+                    //
+                    // 真机实测（网易云 / One UI 5.1）：dispatchMediaButtonEvent 发一对
+                    // ACTION_DOWN + ACTION_UP，会被播放器按「连按两次播放键」计数，
+                    // 而连按两次在 Android 媒体按键约定里是**下一首**——于是「播放/暂停」
+                    // 手势的实际效果是切歌。日志里能看到手势判定完全正确
+                    // （TWO_FINGER_SWIPE_DOWN -> PLAY_PAUSE），缺陷只在这一层。
+                    //
+                    // 这里读状态做分支是安全的：playbackState 由播放器持续回推，
+                    // 手势触发时读到的就是当前真实状态。读不到状态时按「未在播放」
+                    // 处理并调 play()，因为盲操下用户更可能是想恢复播放。
+                    val playing =
+                        controller.playbackState?.state == PlaybackState.STATE_PLAYING
+                    if (playing) controller.transportControls.pause()
+                    else controller.transportControls.play()
                 }
                 MediaCommand.LIKE -> error("收藏使用独立入口")
             }

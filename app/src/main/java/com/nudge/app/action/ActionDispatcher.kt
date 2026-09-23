@@ -41,6 +41,8 @@ class ActionDispatcher(
         return dispatch(when (action) {
             ActionType.NEXT_TRACK -> MediaCommand.NEXT
             ActionType.LIKE -> MediaCommand.LIKE
+            // toggle 语义：盲操下用户听得见当前状态，不需要区分 PLAY / PAUSE
+            ActionType.PLAY_PAUSE -> MediaCommand.PLAY_PAUSE
         })
     }
 

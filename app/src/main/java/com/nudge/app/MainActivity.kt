@@ -30,6 +30,8 @@ import com.nudge.app.media.ActionResult
 import com.nudge.app.media.MediaControlRepository
 import com.nudge.app.media.TrackInfo
 import com.nudge.app.ui.LyricsLabScreen
+import com.nudge.app.config.ActionType
+import com.nudge.app.ui.GestureBindingScreen
 import com.nudge.app.ui.SettingsScreen
 import com.nudge.app.ui.TrackpadScreen
 import com.nudge.app.ui.clearSystemGestureExclusion
@@ -107,6 +109,9 @@ class MainActivity : ComponentActivity() {
             // 实验室是设置页的下一层，所以是独立的布尔量而不是与 showSettings
             // 互斥的枚举：从实验室返回要退回设置页，而不是一路退回主界面。
             var showLyricsLab by remember { mutableStateOf(false) }
+            // 手势绑定二级页。用可空的 ActionType 而非布尔量：这一页必须知道
+            // 是在给哪个动作配手势，null 即「不在这一页」。
+            var bindingAction by remember { mutableStateOf<ActionType?>(null) }
             var track by remember { mutableStateOf<TrackInfo?>(null) }
             var hasPermission by remember { mutableStateOf(repository.hasNotificationAccess()) }
             var lyricsState by remember { mutableStateOf<LyricsState>(LyricsState.Idle) }
@@ -162,9 +167,25 @@ class MainActivity : ComponentActivity() {
 
             NudgeTheme(themeMode = config.themeMode) {
                 Surface {
+                    val editingAction = bindingAction
                     if (showLyricsLab) {
                         BackHandler { showLyricsLab = false }
                         LyricsLabScreen(onBack = { showLyricsLab = false })
+                    } else if (editingAction != null) {
+                        // 与实验室同理：这是设置页的下一层，返回要退回设置页。
+                        // 判断放在 showSettings 之前，否则会被设置页那一支拦截。
+                        BackHandler { bindingAction = null }
+                        GestureBindingScreen(
+                            action = editingAction,
+                            config = config,
+                            onBindingAdd = { action, gesture ->
+                                scope.launch { configStore.addBinding(action, gesture) }
+                            },
+                            onBindingRemove = { action, gesture ->
+                                scope.launch { configStore.removeBinding(action, gesture) }
+                            },
+                            onBack = { bindingAction = null },
+                        )
                     } else if (showSettings) {
                         // 全 app 只有一个 Activity，也没用 navigation，设置页是靠
                         // showSettings 布尔量 if/else 切出来的——系统返回栈里始终只有
@@ -175,12 +196,7 @@ class MainActivity : ComponentActivity() {
                             config = config,
                             profiles = profiles,
                             hasPermission = hasPermission,
-                            onBindingAdd = { action, gesture ->
-                                scope.launch { configStore.addBinding(action, gesture) }
-                            },
-                            onBindingRemove = { action, gesture ->
-                                scope.launch { configStore.removeBinding(action, gesture) }
-                            },
+                            onOpenGestureBinding = { bindingAction = it },
                             onSensitivityChange = {
                                 scope.launch { configStore.setSensitivity(it) }
                             },

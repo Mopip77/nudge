@@ -18,6 +18,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
@@ -50,8 +51,7 @@ fun SettingsScreen(
     config: NudgeConfig,
     profiles: List<ProfileSlot>,
     hasPermission: Boolean,
-    onBindingAdd: (ActionType, Gesture) -> Unit,
-    onBindingRemove: (ActionType, Gesture) -> Unit,
+    onOpenGestureBinding: (ActionType) -> Unit,
     onSensitivityChange: (Sensitivity) -> Unit,
     onThemeChange: (ThemeMode) -> Unit,
     onLyricsEnabledChange: (Boolean) -> Unit,
@@ -127,29 +127,19 @@ fun SettingsScreen(
             onDelete = onProfileDelete,
         )
 
-        // 一个动作可绑多个手势（多选），反向的互斥——一个手势只属于一个动作——
-        // 由 ConfigStore.addBinding 的抢占保证，勾给新动作时会从原动作自动移除。
+        // 二级菜单：一级只列动作（行数恒等于动作数，与手势数量脱钩），
+        // 点进去才是该动作的手势多选页。早先是动作 × 手势全平铺，
+        // 行数随两者相乘增长，加一个动作和两个手势就从 10 行涨到 21 行。
+        SectionTitle("手势绑定")
         ActionType.entries.forEach { action ->
             val bound = config.bindings[action].orEmpty()
-            SectionTitle(
-                if (bound.isEmpty()) "${action.displayName} 的手势（未绑定）"
-                else "${action.displayName} 的手势"
+            NavRow(
+                label = action.displayName,
+                // 摘要直接列出已绑手势名，让「哪个动作还没绑」在一级页一眼可见
+                hint = if (bound.isEmpty()) "未绑定"
+                       else bound.joinToString("、") { it.displayName },
+                onClick = { onOpenGestureBinding(action) },
             )
-            Gesture.entries.forEach { gesture ->
-                val occupiedBy = config.gestureToAction(gesture)
-                val selected = gesture in bound
-                val occupiedByOther = occupiedBy != null && occupiedBy != action
-                OptionRow(
-                    label = gesture.displayName,
-                    hint = if (occupiedByOther) "已绑定「${occupiedBy?.displayName}」" else null,
-                    selected = selected,
-                    multiSelect = true,
-                    onClick = {
-                        if (selected) onBindingRemove(action, gesture)
-                        else onBindingAdd(action, gesture)
-                    },
-                )
-            }
         }
 
         // 灵敏度只在 debug 包里可调：三档的差别要连着试才分得出来，
@@ -421,8 +411,46 @@ internal fun SectionTitle(text: String) {
     )
 }
 
+/**
+ * 通往二级页的行：右侧是「>」而非勾选框，点击整行导航。
+ *
+ * 与 [OptionRow] 分开而不是给它加个 mode 参数——两者的交互语义不同
+ * （选中 vs 导航），合并会让调用处多出一个只在某些取值下有意义的参数。
+ */
 @Composable
-private fun OptionRow(
+private fun NavRow(label: String, hint: String, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 2.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = label,
+                fontSize = 15.sp,
+                color = MaterialTheme.colorScheme.onBackground,
+            )
+            Text(
+                text = hint,
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
+                modifier = Modifier.padding(top = 2.dp),
+            )
+        }
+        Icon(
+            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.3f),
+        )
+    }
+}
+
+@Composable
+internal fun OptionRow(
     label: String,
     hint: String?,
     selected: Boolean,
