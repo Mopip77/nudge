@@ -23,7 +23,8 @@ GestureRecognizer  ──► Gesture         ConfigStore (DataStore)
         │                                   ▲── ProfileCommandReceiver ◄── 广播 (HA / adb / Tasker)
         │                                   ▲── ProfileShortcutActivity ◄── 动态 shortcut
         │                                   │       ▲ ProfileShortcuts.sync  (launcher / 三星 M&R)
-ActionDispatcher  ──► Vibrator
+ActionDispatcher  ──► HapticPalette → HapticSpec.render() → HapticPlayer → Vibrator
+        │                    ▲── HapticOverride ◄── HapticLabScreen (debug)
         │
 MediaControlRepository ──► NotificationListenerService → MediaSessionManager
                            回退: AudioManager.dispatchMediaKeyEvent
@@ -618,6 +619,134 @@ scale 必须排在 blur 之前），统一字号后这些全部不需要了。
 `REQUEST_INSTALL_PACKAGES` 权限在 Android 8+ 还需要用户在系统设置里单独授予，
 `UpdateInstaller.canInstall()` 先查再跳，否则拉安装器会被静默拦下。
 
+## 振动反馈
+
+盲操下振动是确认操作结果的**唯一**渠道，所以五种反馈必须可区分。
+早先全是单震或近似单震，只有时长差别（50 / 30-80-30 / 20 / 200ms），
+实测基本分不出来——尤其切歌与已收藏，除了长短没有任何别的差异。
+
+### 这台机器只有振幅控制，别去找更好的 API
+
+真机取证（SM-G9810 / Android 13，`dumpsys vibrator_manager`）：
+
+```
+mCapabilities=[AMPLITUDE_CONTROL], mSupportedPrimitives=[],
+mSupportedEffects=[], mCompositionSizeMax=0, mPwleSizeMax=0
+```
+
+于是这些全部不可用，**别再试**：
+
+- `startComposition()` + `PRIMITIVE_QUICK_RISE` —— 官方做「蓄力→迸发」正是用它，
+  但 `mSupportedPrimitives` 是空的。
+- `createPredefined(EFFECT_HEAVY_CLICK)` —— `mSupportedEffects` 空，
+  会**静默回退**成通用一震，毫无区分度（静默是这条最坑的地方）。
+- PWLE（频率曲线）—— `mPwleSizeMax=0`。
+
+唯一可用的高表达力接口是 `createWaveform(timings, amplitudes, -1)`。
+所以 `HapticSpec` 做的事就是把参数化的包络离散成那两个数组。
+
+### 区分度靠「形状」，不靠数值
+
+每种反馈占一个**节奏形状**，差异是类别而非程度：
+
+| 反馈 | 形状 | 签名 |
+|---|---|---|
+| 切歌 | 单记重击 42ms | 1 记 |
+| 收藏成功 | 加速脉冲列 + 迸发 | 7 记 / 加速 / 有迸发 |
+| 已收藏 | 三记轻快短击 | 3 记 / 匀速 |
+| 播放/暂停 | 两记等距中性击 | 2 记 / 匀速 |
+| 失败 | 减速渐弱列 | 3 记 / 减速 |
+
+盲操下「几记」「越来越快还是越来越慢」不需要对照就能认出来，
+而**振幅的绝对值没有对照根本分不出来**，所以不拿它当区分维度。
+`HapticSpecTest` 里「五种波形的形状两两不同」按
+`(脉冲数, 有无迸发, 节奏走向)` 三元组断言——它当初正是抓出了
+已收藏与播放/暂停撞形状（都是「2 记匀速」）的问题，那时两者只差振幅，
+而那恰恰是被判定为不可靠的维度。加新反馈时这条会继续拦着。
+
+### 累积感靠间隔压缩，不靠振幅渐强
+
+直觉上「火箭发射」该用一条从 0 平滑爬到满幅的连续曲线。但这台是弱马达，
+连续渐强的低振幅段人手几乎感知不到，实际会退化成「停一会儿然后震一下」——
+正是要修的「一段持续振动」的亲戚。
+
+脉冲的**起停边沿**才是最强的触觉信号，所以蓄力主要靠间隔从 90ms 压到 16ms，
+振幅递增只是辅助。
+
+两个配套约束：
+
+- **蓄力段刻意不爬满**（`endAmp = 0.62`），顶上那截留给迸发。爬满了迸发就没有落差。
+- **迸发前留 50ms 静默**。此时节奏已压到最密，紧接着一记重击会跟最后几个脉冲
+  黏成一团，冲击力全在那段空白的落差上。
+
+`minAmp` 是马达**起振阈值**的地板：LRA/ERM 振幅太低时根本没转起来，
+若渐强的起点低于阈值，前几记完全摸不到，表现为「从中间突然开始震」，
+蓄力的前半段等于白做。
+
+#### 间隔的进度基准与脉冲**不同**
+
+间隔比脉冲少一个，所以它有自己的 `i/(gapCount-1)`。早先两者共用
+`i/(count-1)`，最后一段间隔只取到 `(count-2)/(count-1)`，**永远到不了
+`endGapMs`**——节奏压缩在最该收紧的地方戛然而止。曲率越大缺口越明显
+（`gapCurve=1.9` 时 `0.8^1.9≈0.66`，最后一段间隔差了四倍）。
+这个缺陷在代码里看不出来，端点参数也「看着没问题」，是单测抓出来的。
+
+### 用 `USAGE_MEDIA` 而非默认的 TOUCH
+
+`mVibrationIntensities` 里 `TOUCH=(MEDIUM_LOW)` 而 `MEDIA=(HIGH)`，
+系统按 usage 缩放振幅。挂 TOUCH 等于自己把天花板压低一档，
+而迸发最需要的就是上限。
+
+不用 `NOTIFICATION`（同为 HIGH）：这是用户主动操作的即时反馈而非通知，
+且某些 ROM 下勿扰模式会把 NOTIFICATION 整个静音——那会让盲操下
+唯一的反馈渠道消失。
+
+### 真机验证振动的办法
+
+`dumpsys` 能把实际发给马达的包络完整打出来，不必靠手感猜：
+
+```bash
+adb shell am broadcast -a com.nudge.app.MEDIA \
+  -n com.nudge.app/.action.MediaCommandReceiver --es command like
+adb shell dumpsys vibrator_manager | ag -u 'opPkg: com.nudge.app' | tail -1
+```
+
+两个坑：
+
+1. **必须带 `-n` 指定组件**。不带的话 Android 8+ 会拦下隐式广播
+   （logcat 里是 `Background execution not allowed`），表现为「广播发了没反应」，
+   而 `am broadcast` 仍然返回 `result=0`，看不出失败。
+2. **`command` 的值是小写 wire name**（`next`/`like`/`play_pause`），
+   传 `LIKE` 会被 `MediaCommand.parse` 解成 null 而静默返回。
+
+输出里 `segments=[Step{amplitude=..., duration=...}]` 就是实际包络。
+收藏那条应能看到间隔 90→87→77→62→42→16 单调收紧、振幅 0.28→0.62 爬升、
+50ms 静默、最后 `amplitude=1.0` 的迸发。
+
+### 振动实验室（仅 debug 包）
+
+设置页「反馈」分组 → `ui/HapticLabScreen.kt`。五种反馈各占一块，
+每块有试听按钮、**包络柱状图**和该形状用得上的滑块
+（单脉冲时不显示间隔与曲率——摆出来只会让人以为调了有用）。
+
+包络图是必要的：振动是纯触觉的，手的记忆很短，试到第三块时已经想不起
+第一块什么手感了。图让「这条波形长什么样」在按下去之前就可见，
+与歌词实验室那张梯度表同一个用途。图直接画 `render()` 的产物而非另算近似值。
+
+横轴有 200ms 的最小跨度：单脉冲占自己总时长的 100%，按比例画就是一整块实心蓝，
+既看不出「只有一记」也看不出「很短」——而那恰恰是切歌这条的全部特征。
+
+参数**只存内存**（`HapticOverride`），杀进程即回默认，理由同
+`LyricsAnimOverride`，另加一条：振动强度受机型与系统设置影响极大，
+用户存下来的一组值换台机器完全是另一个手感。
+
+`HapticOverride.specFor` **不是 `@Composable`**（与 `LyricsAnimOverride.current`
+的关键区别）：读它的是 `ActionDispatcher`，在普通函数里调。标成 composable
+会让实验室调的参数只在实验室里听得到，失去意义。
+
+LAB 角标与歌词实验室**共用一个**：它要回答的是「现在跑的是不是实验室参数」，
+这个问题对两者是同一个。
+
 ## 媒体控制的适用范围
 
 - **下一首**：对任意播放器有效。目标优先网易云，无网易云会话时取第一个 PLAYING 的会话。
@@ -656,7 +785,7 @@ adb shell dumpsys media_session | ag -u -o 'description=[^,]*|state=(PLAYING|PAU
 JAVA_HOME=/opt/homebrew/opt/openjdk@17 ./gradlew test
 ```
 
-126 个单元测试，主体在 `GestureRecognizer`——正例（七种手势 × 三档灵敏度）、边界（阈值临界、滑动死区）、负例（斜滑、两指反向、单指滑动、三指降级、指数不符、超时）。**动手势逻辑必须补相应测试**，尤其是防误触的负例。
+140 个单元测试，主体在 `GestureRecognizer`——正例（七种手势 × 三档灵敏度）、边界（阈值临界、滑动死区）、负例（斜滑、两指反向、单指滑动、三指降级、指数不符、超时）。**动手势逻辑必须补相应测试**，尤其是防误触的负例。
 
 预设部分由 `ProfileCodecTest` 覆盖 round-trip 与宽容解码，`ProfileSlotTest` 覆盖槽位号解析。
 
@@ -666,6 +795,12 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@17 ./gradlew test
 （见「梯度基准是屏幕位置」一节）。断言的是这些结构性约束而非具体数值——
 数值随观感调，但违反其中任何一条都会让动画退化（线性滚动，或最上面那行
 晃得最厉害），而这在代码里看不出来，端点数字也看不出来。
+
+振动包络由 `HapticSpecTest` 覆盖：形状的**方向性**（加速列间隔单调收紧、
+减速列单调拉开）、**振幅地板**挡住起振阈值以下的脉冲、迸发前有静默且
+**落差足够**、蓄力段刻意不爬满、**五种波形的形状两两不同**、
+高频反馈足够短。同样断言结构性约束而非具体数值——振动没法自动化测
+（只能上手摸），这一层是唯一的防回归手段。
 
 渲染本身没有自动化测试，靠实验室肉眼看。**但实验室的假歌词只有 10 行、
 循环播放，`windowStart` 很快就卡在末尾**，测不出「窗口滑动后位移停摆」
@@ -706,6 +841,14 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@17 ./gradlew test
   实验室拖任一滑块后返回，出现 `LAB` → 点「恢复默认」后返回，角标消失。
   中间那步同时也是「实验室参数真的作用到主界面」的唯一验证手段——
   `LyricsAnimOverride` 全链路都是 Compose 状态，没法单测。
+- 五种振动反馈的包络。不必靠手感，`dumpsys` 能把实际发给马达的
+  `Step{amplitude, duration}` 序列完整打出来（命令与两个坑见「振动反馈」一节）。
+  断言各自的形状签名：切歌 1 记、收藏 7 记加速 + 迸发、已收藏 3 记匀速、
+  播放/暂停 2 记匀速、失败 3 记减速。
+- 振动实验室的覆盖**真的作用到手势反馈**（而非只在试听按钮上）：
+  把「下一首」的脉冲个数拖到 12 记 → 返回 → 触发真实切歌 →
+  断言 `dumpsys` 里是 12 记而非默认的 1 记 → 点「恢复默认」→ 断言回到 1 记。
+  `HapticOverride` 是进程内状态，没法单测，这是唯一的验证手段。
 - 防误触模式开/关各一次，断言三层同步变化。`dumpsys` 能同时看到三层的状态，
   不必靠肉眼判断：
 

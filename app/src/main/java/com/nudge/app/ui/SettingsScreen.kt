@@ -67,6 +67,7 @@ fun SettingsScreen(
     onDownloadUpdate: (ReleaseInfo) -> Unit,
     onInstallUpdate: (ReleaseInfo) -> Unit,
     onOpenLyricsLab: () -> Unit,
+    onOpenHapticLab: () -> Unit,
     onBack: () -> Unit,
 ) {
     Column(
@@ -193,6 +194,33 @@ fun SettingsScreen(
                     )
                     Text(
                         text = "用假歌词实时调滚动参数，仅 debug 包可见",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
+                    )
+                }
+            }
+        }
+
+        // 振动实验室同理：调出来的值要手抄回 HapticPalette，不做持久化。
+        // 放在「反馈」这个独立分组下而不是塞进歌词组——两者调的是完全不同的东西。
+        if (BuildConfig.DEBUG) {
+            SectionTitle("反馈")
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 2.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable(onClick = onOpenHapticLab)
+                    .padding(horizontal = 8.dp, vertical = 12.dp),
+            ) {
+                Column {
+                    Text(
+                        text = "振动实验室",
+                        fontSize = 15.sp,
+                        color = MaterialTheme.colorScheme.onBackground,
+                    )
+                    Text(
+                        text = "逐条试听并调整各动作的振动波形，仅 debug 包可见",
                         fontSize = 11.sp,
                         color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
                     )

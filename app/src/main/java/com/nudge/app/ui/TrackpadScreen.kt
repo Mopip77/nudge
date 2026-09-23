@@ -68,6 +68,7 @@ import androidx.compose.ui.unit.sp
 import android.graphics.Bitmap
 import android.os.SystemClock
 import android.view.MotionEvent
+import com.nudge.app.action.HapticOverride
 import com.nudge.app.config.NudgeConfig
 import com.nudge.app.gesture.Gesture
 import com.nudge.app.gesture.GestureRecognizer
@@ -168,7 +169,11 @@ fun TrackpadScreen(
             // 正在跑实验室参数时的角标。没有它就分不清「刚才那下观感变化
             // 是参数生效了，还是这首歌本来就长这样」，而调参全靠肉眼比对。
             // release 恒 false（见 LyricsAnimOverride.isActive），角标不存在。
-            if (LyricsAnimOverride.isActive) {
+            //
+            // 歌词与振动共用**一个**角标：它要回答的是「现在跑的是不是实验室
+            // 调出来的参数」，而这个问题对两者是同一个。拆成两个角标反而要
+            // 用户先分辨是哪一个亮着，而角标本身只是个消歧提示。
+            if (LyricsAnimOverride.isActive || HapticOverride.isActive) {
                 Text(
                     text = "LAB",
                     fontSize = 10.sp,

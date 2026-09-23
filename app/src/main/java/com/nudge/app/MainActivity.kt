@@ -29,6 +29,7 @@ import com.nudge.app.lyrics.LyricsState
 import com.nudge.app.media.ActionResult
 import com.nudge.app.media.MediaControlRepository
 import com.nudge.app.media.TrackInfo
+import com.nudge.app.ui.HapticLabScreen
 import com.nudge.app.ui.LyricsLabScreen
 import com.nudge.app.config.ActionType
 import com.nudge.app.ui.GestureBindingScreen
@@ -109,6 +110,7 @@ class MainActivity : ComponentActivity() {
             // 实验室是设置页的下一层，所以是独立的布尔量而不是与 showSettings
             // 互斥的枚举：从实验室返回要退回设置页，而不是一路退回主界面。
             var showLyricsLab by remember { mutableStateOf(false) }
+            var showHapticLab by remember { mutableStateOf(false) }
             // 手势绑定二级页。用可空的 ActionType 而非布尔量：这一页必须知道
             // 是在给哪个动作配手势，null 即「不在这一页」。
             var bindingAction by remember { mutableStateOf<ActionType?>(null) }
@@ -171,6 +173,9 @@ class MainActivity : ComponentActivity() {
                     if (showLyricsLab) {
                         BackHandler { showLyricsLab = false }
                         LyricsLabScreen(onBack = { showLyricsLab = false })
+                    } else if (showHapticLab) {
+                        BackHandler { showHapticLab = false }
+                        HapticLabScreen(onBack = { showHapticLab = false })
                     } else if (editingAction != null) {
                         // 与实验室同理：这是设置页的下一层，返回要退回设置页。
                         // 判断放在 showSettings 之前，否则会被设置页那一支拦截。
@@ -288,6 +293,7 @@ class MainActivity : ComponentActivity() {
                                 )
                             },
                             onOpenLyricsLab = { showLyricsLab = true },
+                            onOpenHapticLab = { showHapticLab = true },
                             onBack = { showSettings = false },
                         )
                     } else {

@@ -1,10 +1,6 @@
 package com.nudge.app.action
 
 import android.content.Context
-import android.os.Build
-import android.os.VibrationEffect
-import android.os.Vibrator
-import android.os.VibratorManager
 import com.nudge.app.config.ActionType
 import com.nudge.app.config.NudgeConfig
 import com.nudge.app.gesture.Gesture
@@ -22,13 +18,7 @@ class ActionDispatcher(
     context: Context,
     private val repository: MediaControlRepository,
 ) {
-    private val vibrator: Vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        val manager = context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
-        manager.defaultVibrator
-    } else {
-        @Suppress("DEPRECATION")
-        context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
-    }
+    private val haptics = HapticPlayer(context)
 
     /** 执行手势对应的动作。手势未绑定任何动作时返回 null。 */
     fun dispatch(gesture: Gesture, config: NudgeConfig): ActionResult? {
@@ -52,21 +42,19 @@ class ActionDispatcher(
         return result
     }
 
+    /**
+     * 按结果选一条**形状**不同的波形，而不是只改时长。
+     *
+     * 早先五种反馈全是单震或近似单震，只有时长差别（50/30-80-30/20/200ms），
+     * 盲操下几乎分不出来——尤其切歌与已收藏，除了长短没有任何别的差异，
+     * 而长短在没有对照时不可辨。
+     *
+     * 现在每种占一个节奏形状（见 [HapticPalette]），差异是类别而非程度。
+     * 波形经 [HapticOverride] 取，debug 包里实验室调的值能直接作用到
+     * 真实手势反馈上——只在实验室里能听到的话，调出来的参数没法在
+     * 真实使用节奏下验证。
+     */
     private fun vibrateFor(result: ActionResult) {
-        val effect = when (result) {
-            ActionResult.Skipped, ActionResult.PlaybackCommandSent ->
-                VibrationEffect.createOneShot(50, DEFAULT_AMPLITUDE)
-            ActionResult.Liked -> VibrationEffect.createWaveform(
-                longArrayOf(0, 30, 80, 30), -1
-            )
-            ActionResult.AlreadyLiked -> VibrationEffect.createOneShot(20, DEFAULT_AMPLITUDE)
-            ActionResult.NoSession, is ActionResult.Failed ->
-                VibrationEffect.createOneShot(200, DEFAULT_AMPLITUDE)
-        }
-        vibrator.vibrate(effect)
-    }
-
-    private companion object {
-        const val DEFAULT_AMPLITUDE = VibrationEffect.DEFAULT_AMPLITUDE
+        haptics.play(HapticOverride.specFor(HapticPalette.idFor(result)))
     }
 }
