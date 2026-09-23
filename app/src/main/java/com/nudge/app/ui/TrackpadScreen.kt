@@ -2,6 +2,7 @@ package com.nudge.app.ui
 
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -28,6 +29,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -216,7 +218,11 @@ private fun TopBar(track: TrackInfo?, onOpenSettings: () -> Unit) {
                     .padding(start = 20.dp, end = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                AlbumArt(artwork = artwork)
+                AlbumArt(
+                    artwork = artwork,
+                    // track 为 null（未检测到播放）时不算暂停，避免一进应用就顶着暂停图标
+                    isPaused = track != null && !track.isPlaying,
+                )
 
                 Column(
                     modifier = Modifier
@@ -344,9 +350,24 @@ private fun MarqueeText(
     }
 }
 
+/** 暂停时封面的模糊半径。够看出「蒙上一层」，又不至于认不出是哪张封面。 */
+private val PAUSED_COVER_BLUR = 6.dp
+
+/**
+ * 专辑封面。暂停时**模糊 + 叠一个暂停图标**，取代早先那行「已暂停」小字——
+ * 文字混在时长旁边，盲操抬眼一瞥根本分不出来，而封面是视线本来就会落到的地方。
+ *
+ * @param isPaused 播放器处于暂停态。无封面时同样生效（图标叠在占位音符上）。
+ */
 @Composable
-private fun AlbumArt(artwork: Bitmap?) {
+private fun AlbumArt(artwork: Bitmap?, isPaused: Boolean) {
     val shape = RoundedCornerShape(10.dp)
+    // 切歌/暂停时不要硬切，跟随状态渐变一下更顺眼
+    val blurRadius by animateDpAsState(
+        targetValue = if (isPaused) PAUSED_COVER_BLUR else 0.dp,
+        animationSpec = tween(durationMillis = 220),
+        label = "coverBlur",
+    )
     Box(
         modifier = Modifier
             .size(52.dp)
@@ -359,7 +380,9 @@ private fun AlbumArt(artwork: Bitmap?) {
                 bitmap = artwork.asImageBitmap(),
                 contentDescription = "专辑封面",
                 contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize(),
+                // blur 恒 clip=true 且裁到自己那层的排版矩形，半径为 0 时也照样裁。
+                // 放在 fillMaxSize 之后、外层 clip 之内，光晕才有整块封面可以铺开。
+                modifier = Modifier.fillMaxSize().blur(blurRadius),
             )
         } else {
             Icon(
@@ -367,6 +390,21 @@ private fun AlbumArt(artwork: Bitmap?) {
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f),
                 modifier = Modifier.size(24.dp),
+            )
+        }
+
+        if (isPaused) {
+            // 压暗一层再放图标：浅色封面下白图标本身对比度不够
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.35f))
+            )
+            Icon(
+                imageVector = Icons.Filled.Pause,
+                contentDescription = "已暂停",
+                tint = Color.White.copy(alpha = 0.9f),
+                modifier = Modifier.size(26.dp),
             )
         }
     }
@@ -423,9 +461,10 @@ private fun ProgressRow(track: TrackInfo, modifier: Modifier = Modifier) {
                 fontSize = 11.sp,
                 color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.45f),
             )
+            // 暂停态改由封面上的图标表达，这里只留总时长——
+            // 两处都说同一件事反而让时长这个信息被稀释
             Text(
-                text = if (track.isPlaying) formatDuration(track.durationMs)
-                       else "已暂停 · ${formatDuration(track.durationMs)}",
+                text = formatDuration(track.durationMs),
                 fontSize = 11.sp,
                 color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.45f),
             )

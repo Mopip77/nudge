@@ -83,6 +83,64 @@ Termux 这些声明了同一 MIME 的应用全列出来，用户得自己认出�
 deprecated（官方推荐 `PackageInstaller` Session API），但那套要多写一个安装结果广播接收器，
 对一个手动触发的更新入口不划算。
 
+## 滑动手势
+
+点击类之外的第二个维度。加它的动机是：原有五个手势全是 tap 家族，彼此只靠「几根手指」
+和「双击 vs 长按+点」区分，而盲操下这两个维度都容易出错（手指数自己数不清，
+tap 节奏受走动影响）。**方向是身体记得住的**，区分度最高。
+
+`MOVE` 原本只用来**否决**手势，现在也能产出手势——这是本次改动的实质。
+
+### 死区：`swipeMinDistanceDp` 必须 > `moveToleranceDp`
+
+两个阈值之间是死区：位移超过 `moveToleranceDp` 时点击类已被否决，
+但不到 `swipeMinDistanceDp` 又不构成滑动，于是**什么都不触发**。
+
+这是刻意的。若两者相等，手抖到恰好越过容差就会立刻判成滑动，把「想双击但手不稳」
+变成一次误触发。盲操下宁可不触发也不要触发错。`GestureRecognizerTest`
+有测试拦着这条不变式。
+
+### 判定条件，以及为什么是「都超过」而非「平均超过」
+
+1. 本批**恰好**两根手指（`batchPeakFingers == 2`）——要求等于而非 ≥，
+   否则三指滑动会被降级识别成两指滑动
+2. 两指竖直位移**同向**且**都**超过 `swipeMinDistanceDp`
+3. 两指横向位移都不超过 `swipeMaxCrossDp`（保证是竖直滑动而非斜划）
+
+条件 2 取「都超过」：一根划够、另一根几乎没动更像握持时的单指误划，不该算双指滑动。
+两指反向（一上一下）是缩放之类的动作，也不产出。
+
+### `lastPositions` 抬起时不删除
+
+滑动判定发生在**最后一根手指抬起**的那一刻。先抬起的那根若已被移除，
+就只剩一根手指的位移可算，「两指同向」这个核心条件无从验证。
+整批结束时统一清，`onDown` 开批时也清一次（上一批的残留会污染位移计算）。
+
+### 滑动判定必须排在双击判定之前
+
+一次两指滑动同样满足「两指按下又抬起」。若先走双击分支，它会被记为 `lastTap`，
+与下一次滑动凑成一次「两指双击」。产出滑动后要把 `lastTapFingers` / `lastTapEndMs`
+清掉，否则连续两次滑动会额外触发一次双击。
+
+### 真机注入多指手势的办法
+
+`adb shell input` 只能单指，`getevent` 在三星上被 One UI 挡住（`-pl` 能列设备，
+`-lt` 一行事件都抓不到，且无报错）。但 `sendevent` 可以**注入**——这台屏是
+type B 多点协议（有 `ABS_MT_SLOT`），按槽位写就能模拟两根手指：
+
+```sh
+DEV=/dev/input/event3
+sendevent $DEV 3 47 0      # ABS_MT_SLOT = 0
+sendevent $DEV 3 57 100    # ABS_MT_TRACKING_ID，建立接触点；-1 为销毁
+sendevent $DEV 3 53 $X     # ABS_MT_POSITION_X，原始量程 0..4095
+sendevent $DEV 3 54 $Y     # ABS_MT_POSITION_Y
+sendevent $DEV 0 0 0       # SYN_REPORT
+```
+
+坐标要从屏幕像素换算到原始量程（本机 1080×2400 → 0..4095）。
+脚本要整个放在设备端跑：每条 `adb shell` 往返几十毫秒，
+分多次调用会把双击窗口（350ms）撑爆，表现为「双击测不出来」而误判成回归。
+
 ## 防误触
 
 盲操场景里误触的代价是**不对称**的：误触发一次「下一首」只是烦人，但误滑退出应用后
@@ -183,6 +241,36 @@ deprecated（官方推荐 `PackageInstaller` Session API），但那套要多写
 4. `ProfileCodec` 的 encode / decode（decode 要宽容回落）
 5. 设置页的 UI 与 `MainActivity` 的回调
 
+### 手势绑定是二级菜单
+
+设置页一级只列动作（`NavRow`，行数恒等于动作数），点进去才是 `GestureBindingScreen`
+的手势多选页。早先是动作 × 手势**全平铺**，行数随两者相乘增长——
+加一个动作和两个手势就从 10 行涨到 21 行，是平方级恶化。
+
+一级页的摘要直接列出已绑手势名，让「哪个动作还没绑」一眼可见；
+这对默认不绑的播放/暂停尤其重要。
+
+二级页把手势分成「点击类」「滑动类」两组：两类的触发方式完全不同
+（要划够距离 vs 点住不动），混在一起列会让用户以为是同一类操作的变体。
+
+抢占语义沿用平铺版——被别的动作占用的手势照样可勾，只是多一行
+「当前属于「X」，勾选将移交」的提示。互斥由 `ConfigStore.addBinding` 保证。
+
+导航沿用实验室那套布尔量 `if/else`，但状态是**可空的 `ActionType`** 而非布尔量：
+这一页必须知道在给哪个动作配手势。判断要排在 `showSettings` 之前，否则会被
+设置页那一支拦截。
+
+### `NudgeConfig.DEFAULT.bindings` 要列全每个 `ActionType`，包括空集
+
+读取侧（`ConfigStore.config`、`ProfileCodec.decode`）都按 `ActionType.entries`
+**全量**构造 map，所以那里「缺 key」与「空集」等价——但对 `equals` **不等价**。
+`DEFAULT` 里漏写某个动作，round-trip 出来的 config 会多一个空集键，
+与 `DEFAULT` 判不相等，`ProfileCodecTest` 的四个 round-trip 用例会一起挂。
+
+加动作时若默认不绑任何手势，要显式写 `ActionType.XXX to emptySet()`，
+不能靠「不写」来表达。同理 `ProfileCodecTest` 里自己构造 bindings 的用例
+也要给出每个动作的条目。
+
 ### 加载预设必须全量写入
 
 `loadProfile` 要把五个配置项**全部**写进 DataStore，包括值等于默认值的项，
@@ -249,6 +337,27 @@ shortcut 点击是 `startActivity` 而非广播，所以两条路径不能共用
 `onReceive` 与 `onCreate` 里都用 `runBlocking` 而非异步协程：返回后进程可能立即被回收
 （Activity 则是紧接着 finish），异步写 DataStore 会来不及执行完。写入是毫秒级，
 远在 10 秒配额内。
+
+## 暂停态靠封面表达，不靠文字
+
+暂停时**封面模糊 + 压暗 + 叠一个暂停图标**（`AlbumArt` 的 `isPaused`）。
+早先是在时长旁边写一行「已暂停 · 3:41」，混在同色号同字号的小字里，
+抬眼一瞥根本分不出来——而封面是视线本来就会落到的地方。
+
+改了之后时长那处**只留总时长**，不再重复说暂停。两处都说同一件事，
+反而把时长这个信息稀释掉了。
+
+几个实现约束：
+
+- `blur` 要排在 `fillMaxSize` 之后、外层 `clip(shape)` 之内。`BlurNode` 恒
+  `clip=true` 且裁到自己那层的排版矩形，位置不对光晕会在圆角处被硬切。
+  （半径为 0 时也照样裁，所以这里用 `animateDpAsState` 从 0 起步是安全的，
+  但若封面本身要保持锐利就不能挂 `blur`。）
+- 压暗那层不能省：浅色封面下白图标对比度不够。
+- `track == null`（未检测到播放）时**不算暂停**，否则一进应用就顶着一个暂停图标。
+  判断是 `track != null && !track.isPlaying`。
+- `blur` 需要 API 31+，低版本静默降级为不模糊，只剩图标 + 压暗。
+  图标本身已经够表达暂停，可以接受。
 
 ## 歌词展示
 
@@ -513,8 +622,33 @@ scale 必须排在 blur 之前），统一字号后这些全部不需要了。
 
 - **下一首**：对任意播放器有效。目标优先网易云，无网易云会话时取第一个 PLAYING 的会话。
 - **收藏**：**仅网易云**。走 custom action 动态查找（匹配 `STAR` 或 name 含 `like`），**不要硬编码 action id**，以适应网易云改版。
+- **播放/暂停**：toggle 语义，默认不绑手势（手势池已够用，绑哪个交给用户）。
 
 真机实测网易云的 `actions` 位掩码**不含** `ACTION_SET_RATING`，所以收藏只能走 custom action。设计文档 §5.2 里的 `setRating` 写法是早期方案，以代码为准。
+
+### 播放/暂停必须读状态后调 play()/pause()，不能发 PLAY_PAUSE 键码
+
+真机实测（网易云 / One UI 5.1）：用 `controller.dispatchMediaButtonEvent` 发一对
+`KEYCODE_MEDIA_PLAY_PAUSE` 的 ACTION_DOWN + ACTION_UP，会被播放器按**连按两次播放键**
+计数，而连按两次在 Android 媒体按键约定里是「下一首」——于是「播放/暂停」手势的
+实际效果是切歌。
+
+这个缺陷极难从现象定位：手势判定链路**完全正确**（日志里是
+`TWO_FINGER_SWIPE_DOWN -> PLAY_PAUSE`），DataStore 里的绑定也对，
+只有最后一层把命令翻译成播放器动作时才出错。排查时不要一路怀疑手势识别，
+先用 `description=` 看歌名变没变，一次就能把范围缩到这一层：
+
+```bash
+adb shell dumpsys media_session | ag -u -o 'description=[^,]*|state=(PLAYING|PAUSED)'
+```
+
+正确写法是读 `playbackState` 后显式调 `transportControls.play()` / `pause()`。
+读状态在这里是安全的（playbackState 由播放器持续回推，触发时读到的就是当前真实状态），
+不必像收藏那条 toggle 缺陷那样担心「读到尚未更新的状态」。读不到状态时按「未在播放」
+处理并调 `play()`——盲操下用户更可能是想恢复播放。
+
+注意这**只**适用于 `MediaController.dispatchMediaButtonEvent`。零权限回退路径用的
+`AudioManager.dispatchMediaKeyEvent` 仍然必须成对发 DOWN + UP，那是单次按下的正确表达。
 
 ## 测试
 
@@ -522,7 +656,7 @@ scale 必须排在 blur 之前），统一字号后这些全部不需要了。
 JAVA_HOME=/opt/homebrew/opt/openjdk@17 ./gradlew test
 ```
 
-114 个单元测试，主体在 `GestureRecognizer`——正例（五种手势 × 三档灵敏度）、边界（阈值临界）、负例（滑动、指数不符、超时）。**动手势逻辑必须补相应测试**，尤其是防误触的负例。
+126 个单元测试，主体在 `GestureRecognizer`——正例（七种手势 × 三档灵敏度）、边界（阈值临界、滑动死区）、负例（斜滑、两指反向、单指滑动、三指降级、指数不符、超时）。**动手势逻辑必须补相应测试**，尤其是防误触的负例。
 
 预设部分由 `ProfileCodecTest` 覆盖 round-trip 与宽容解码，`ProfileSlotTest` 覆盖槽位号解析。
 
@@ -549,6 +683,13 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@17 ./gradlew test
 - 对**已收藏**的歌重复执行收藏手势，断言 `hasHeart` 保持 true 不变（防 toggle 缺陷回归）
 - 把某动作的手势全部取消勾选 → 存成预设 → 改回有绑定 → 加载该预设 →
   断言该动作仍显示「未绑定」（防 `loadProfile` 跳过写入的缺陷回归）
+- 把播放/暂停绑到任一手势，在**播放中**触发，断言**歌名不变**且状态转为暂停
+  （防「PLAY_PAUSE 被当成连按两次播放键而切歌」的缺陷回归）。
+  只看状态不够——切歌后状态仍是 PLAYING，必须同时比对歌名：
+
+  ```bash
+  adb shell dumpsys media_session | ag -u -o 'description=[^,]*|state=(PLAYING|PAUSED)'
+  ```
 - 歌词滚动在**歌曲中段**（至少第 6 行以后）仍是平滑位移而非瞬间替换，
   且换行起始那一两帧没有整列的突跳。只看开头会漏掉：`windowStart`
   被钉在 0 时缺陷不显现，见「窗口滑动之后」那两节。
