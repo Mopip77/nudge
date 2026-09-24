@@ -1031,6 +1031,33 @@ scale 必须排在 blur 之前），统一字号后这些全部不需要了。
 所以这个功能只做**背景层**：封面铺满，系统的时钟、通知、媒体卡片照常
 压在上面且全部可操作。做不到「大封面独占一块 + 播放条在下方」那种分层。
 
+### 前台服务必须声明 `foregroundServiceType`，且要在 A14+ 上验
+
+**Android 14 起不声明就是启动即崩**（`MissingForegroundServiceTypeException`），
+而 targetSdk 34 正好踩在门槛上。这个坑在 **Android 13 上完全测不出来**
+——13 允许不带 type 的前台服务，于是很容易得出「不需要声明」的错误结论，
+到 A14+ 的机器上一启用就闪退。**前台服务必须在 A14+ 的真机上验。**
+
+类型取 `specialUse`（不播放、不传数据，只是跟着别人的播放状态改壁纸），
+配套要单独申请 `FOREGROUND_SERVICE_SPECIAL_USE`，
+`startForeground` 也要带上 type 参数。
+
+### 锁屏是**动态壁纸**时一律拒绝开启
+
+**这条真的弄丢过用户的壁纸，不可逆。** S24 Ultra 上锁屏是三星的
+`LayeredWallpaperService`，功能开启后写入静态图把它顶掉，而恢复侧
+**根本没有对应的动作**：设置 live wallpaper 需要 signature 级的
+`SET_WALLPAPER_COMPONENT`，第三方拿不到；用户指定的静态「恢复图」
+也替不回动态壁纸。
+
+成因是 `getWallpaperId` 对动态壁纸同样返回正数，只看 id 会把它误判成
+「设过静态图」，以为给张恢复图就能救。所以探测的**最前面**要用
+`getWallpaperInfo(FLAG_LOCK)`（只在 live wallpaper 时返回非 null）
+单独挡一道，`canEnable` 恒 false。
+
+不做成「警告一下让用户自己决定」：用户没有能力判断这个操作不可逆，
+而代价是他自己的壁纸。
+
 ### 恢复原壁纸：读不到原图，只能靠 `getWallpaperId` 判断「有没有」
 
 `getWallpaperFile(FLAG_LOCK)` 在 Android 13+ 对第三方**彻底不可用**：
@@ -1309,7 +1336,7 @@ adb shell dumpsys media_session | ag -u -o 'description=[^,]*|state=(PLAYING|PAU
 JAVA_HOME=/opt/homebrew/opt/openjdk@17 ./gradlew test
 ```
 
-192 个单元测试，主体在 `GestureRecognizer`——正例（七种手势 × 三档灵敏度）、边界（阈值临界、滑动死区）、负例（斜滑、两指反向、单指滑动、三指降级、指数不符、超时）。**动手势逻辑必须补相应测试**，尤其是防误触的负例。
+193 个单元测试，主体在 `GestureRecognizer`——正例（七种手势 × 三档灵敏度）、边界（阈值临界、滑动死区）、负例（斜滑、两指反向、单指滑动、三指降级、指数不符、超时）。**动手势逻辑必须补相应测试**，尤其是防误触的负例。
 
 预设部分由 `ProfileCodecTest` 覆盖 round-trip 与宽容解码，`ProfileSlotTest` 覆盖槽位号解析。
 
