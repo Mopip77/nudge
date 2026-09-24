@@ -214,6 +214,9 @@ class MainActivity : ComponentActivity() {
                             onLyricsAlignmentChange = {
                                 scope.launch { configStore.setLyricsAlignment(it) }
                             },
+                            onDisplayModeChange = {
+                                scope.launch { configStore.setDisplayMode(it) }
+                            },
                             onAntiMistouchChange = {
                                 scope.launch { configStore.setAntiMistouchEnabled(it) }
                             },

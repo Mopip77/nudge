@@ -1,43 +1,22 @@
 package com.nudge.app.ui
 
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.requiredWidth
 import androidx.compose.foundation.layout.safeDrawing
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Favorite
-import androidx.compose.material.icons.filled.FavoriteBorder
-import androidx.compose.material.icons.filled.MusicNote
-import androidx.compose.material.icons.filled.Pause
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -45,30 +24,19 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInteropFilter
-import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.rememberTextMeasurer
-import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import android.graphics.Bitmap
-import android.os.SystemClock
 import android.view.MotionEvent
 import com.nudge.app.action.HapticOverride
+import com.nudge.app.config.DisplayMode
 import com.nudge.app.config.NudgeConfig
 import com.nudge.app.gesture.Gesture
 import com.nudge.app.gesture.GestureRecognizer
@@ -76,13 +44,16 @@ import com.nudge.app.gesture.TouchEvent
 import com.nudge.app.gesture.TouchEventType
 import com.nudge.app.lyrics.LyricsState
 import com.nudge.app.media.TrackInfo
-import com.nudge.app.media.formatDuration
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-/** 进度条重组间隔。500ms 让进度看起来连续，又不至于频繁重组。 */
-private const val PROGRESS_TICK_MS = 500L
-
+/**
+ * 播放主界面。两个显示模式（见 [DisplayMode]）共用同一套状态、同一个顶栏、
+ * 同一个手势识别器，差异只在下方内容区的呈现。
+ *
+ * **手势区范围两个模式完全一致**：恒为顶栏**以下**那块。封面模式下虽然
+ * 视觉上没有边界了，但触摸区并没有扩张到整屏——顶栏要留给设置按钮，
+ * 整屏接管会让落在按钮上的那根手指被识别器吞掉半个多指手势。
+ */
 @androidx.compose.ui.ExperimentalComposeUiApi
 @Composable
 fun TrackpadScreen(
@@ -103,377 +74,183 @@ fun TrackpadScreen(
     val flashAlpha = remember { Animatable(0f) }
     val scope = rememberCoroutineScope()
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-            // 沉浸式下窗口铺到了屏幕物理边缘，不避开刘海／挖孔的话顶栏会被盖住。
-            // 用 safeDrawing 而非 statusBars：系统栏此时是隐藏的，真正要避的是切口。
-            .windowInsetsPadding(WindowInsets.safeDrawing)
-    ) {
-        TopBar(track = track, onOpenSettings = onOpenSettings)
+    val albumMode = config.displayMode == DisplayMode.ALBUM
+    // 封面模式恒为暗底白字：底色完全由封面决定，跟着明暗主题走没有意义。
+    // 歌词、提示文字、顶栏都走这一个基色，保证同一块屏幕上口径统一。
+    val contentColor = if (albumMode) Color.White else MaterialTheme.colorScheme.onSurface
 
-        Box(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .padding(16.dp)
-                .clip(RoundedCornerShape(24.dp))
-                .background(MaterialTheme.colorScheme.surface)
-                .drawBehind {
-                    touchPoints.forEach { point ->
-                        drawCircle(
-                            color = Color.Gray.copy(alpha = 0.35f),
-                            radius = 48f,
-                            center = point,
-                        )
-                    }
-                    if (flashAlpha.value > 0f) {
-                        drawRect(color = Color.White.copy(alpha = flashAlpha.value * 0.5f))
-                    }
+    // 触摸区的修饰符。两个模式共用，保证手势行为逐字节一致——
+    // 分别写两份的话，改了一处忘了另一处就会出现「换个模式手势就不灵」。
+    val touchModifier = Modifier
+        .drawBehind {
+            touchPoints.forEach { point ->
+                drawCircle(
+                    color = Color.Gray.copy(alpha = 0.35f),
+                    radius = 48f,
+                    center = point,
+                )
+            }
+            if (flashAlpha.value > 0f) {
+                drawRect(color = Color.White.copy(alpha = flashAlpha.value * 0.5f))
+            }
+        }
+        .pointerInteropFilter { motionEvent ->
+            handleMotionEvent(motionEvent, recognizer) { gesture ->
+                scope.launch {
+                    flashAlpha.snapTo(1f)
+                    flashAlpha.animateTo(0f, tween(durationMillis = 250))
                 }
-                .pointerInteropFilter { motionEvent ->
-                    handleMotionEvent(motionEvent, recognizer) { gesture ->
-                        scope.launch {
-                            flashAlpha.snapTo(1f)
-                            flashAlpha.animateTo(0f, tween(durationMillis = 250))
-                        }
-                        onGesture(gesture)
-                    }
-                    touchPoints = currentPoints(motionEvent)
-                    true
-                },
-            contentAlignment = Alignment.Center,
+                onGesture(gesture)
+            }
+            touchPoints = currentPoints(motionEvent)
+            true
+        }
+
+    Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+        // 封面背景铺在**窗口的物理边缘**，不受 safeDrawing 内缩——
+        // 沉浸式下封面要一直铺到刘海和屏幕底边，留一圈背景色会把
+        // 「整屏都是这张封面」的观感破坏掉。文字层仍然避开切口（见下）。
+        //
+        // 顶栏实测高度（含它上方被 safeDrawing 让出的切口高度）。
+        // 背景要铺满整个窗口，但清晰封面得在顶栏**以下**那块区域里居中，
+        // 顶栏的压暗渐变也按这个高度铺，所以要把它量出来传给背景层。
+        var headerHeight by remember { mutableStateOf(0.dp) }
+        val localDensity = LocalDensity.current
+        // safeDrawing 在顶部让出的高度（刘海／挖孔）。顶栏的实测高度不含它，
+        // 而背景层是从窗口物理顶边起算的，两者要对齐才行。
+        val safeTopPadding = WindowInsets.safeDrawing.asPaddingValues()
+            .calculateTopPadding()
+
+        if (albumMode) {
+            AlbumBackdrop(
+                artwork = track?.artwork,
+                // 歌词开着时退化成统一的模糊氛围层，清晰封面淡出
+                lyricsMode = config.lyricsEnabled,
+                headerHeight = headerHeight,
+            )
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                // 沉浸式下窗口铺到了屏幕物理边缘，不避开刘海／挖孔的话顶栏会被盖住。
+                // 用 safeDrawing 而非 statusBars：系统栏此时是隐藏的，真正要避的是切口。
+                .windowInsetsPadding(WindowInsets.safeDrawing)
         ) {
-            // 歌词画在最底层，触摸事件由外层 Box 的 pointerInteropFilter 接收，
-            // 本层不加任何 pointer 修饰符，故不影响手势识别
-            if (config.lyricsEnabled) {
-                LyricsOverlay(
-                    state = lyricsState,
-                    track = track,
-                    alignment = config.lyricsAlignment,
-                    // debug 包里跟随实验室的实时调参，release 恒为默认值。
-                    // 见 LyricsAnimOverride：不落盘，杀进程即回默认。
-                    spec = LyricsAnimOverride.current,
-                )
-            }
-
-            if (!hasPermission) {
-                Text(
-                    text = "需要通知使用权才能控制播放\n点击右上角设置授予",
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
-                    fontSize = 14.sp,
-                )
-            }
-
-            // 正在跑实验室参数时的角标。没有它就分不清「刚才那下观感变化
-            // 是参数生效了，还是这首歌本来就长这样」，而调参全靠肉眼比对。
-            // release 恒 false（见 LyricsAnimOverride.isActive），角标不存在。
-            //
-            // 歌词与振动共用**一个**角标：它要回答的是「现在跑的是不是实验室
-            // 调出来的参数」，而这个问题对两者是同一个。拆成两个角标反而要
-            // 用户先分辨是哪一个亮着，而角标本身只是个消歧提示。
-            if (LyricsAnimOverride.isActive || HapticOverride.isActive) {
-                Text(
-                    text = "LAB",
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f),
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(8.dp),
-                )
-            }
-        }
-    }
-}
-
-/** 封面模糊铺底的高斯半径，够糊到不干扰文字又能透出主色调。 */
-private val BACKDROP_BLUR = 28.dp
-private val LIKE_RED = Color(0xFFE04B5A)
-
-@Composable
-private fun TopBar(track: TrackInfo?, onOpenSettings: () -> Unit) {
-    Box(modifier = Modifier.fillMaxWidth()) {
-        // 封面模糊铺底。blur 需要 API 31+，低版本自动降级为不模糊，
-        // 那样整块会变成一张清晰大图盖住文字，故低版本直接不画。
-        val artwork = track?.artwork
-        if (artwork != null && android.os.Build.VERSION.SDK_INT >= 31) {
-            Image(
-                bitmap = artwork.asImageBitmap(),
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier
-                    .matchParentSize()
-                    .blur(BACKDROP_BLUR)
-                    .alpha(0.45f),
-            )
-            // 压暗一层，保证任何封面下文字都有对比度
             Box(
-                modifier = Modifier
-                    .matchParentSize()
-                    .background(MaterialTheme.colorScheme.background.copy(alpha = 0.55f))
-            )
-        }
-
-        Column(modifier = Modifier.padding(top = 16.dp, bottom = 12.dp)) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(start = 20.dp, end = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.onSizeChanged {
+                    // 加上被 safeDrawing 让出的那段：背景是从窗口物理顶边起算的，
+                    // 顶栏却从切口下方才开始，不补这一段会让封面整体偏上。
+                    headerHeight = with(localDensity) {
+                        it.height.toDp()
+                    } + safeTopPadding
+                }
             ) {
-                AlbumArt(
-                    artwork = artwork,
-                    // track 为 null（未检测到播放）时不算暂停，避免一进应用就顶着暂停图标
-                    isPaused = track != null && !track.isPlaying,
+                PlayerHeader(
+                    track = track,
+                    onDark = albumMode,
+                    // 封面模式下整屏已经是封面了，顶栏再自己铺一层模糊封面
+                    // 会在信息区下沿戳出一道能看见的暗边
+                    drawBackdrop = !albumMode,
+                    onOpenSettings = onOpenSettings,
                 )
+            }
 
-                Column(
+            if (albumMode) {
+                // 封面模式：内容区没有卡片、没有背景，直接浮在整屏封面上。
+                // 触摸修饰符照挂，手势范围与简洁模式一致。
+                Box(
                     modifier = Modifier
                         .weight(1f)
-                        .padding(start = 14.dp)
+                        .fillMaxWidth()
+                        .then(touchModifier),
+                    contentAlignment = Alignment.Center,
                 ) {
-                    MarqueeText(
-                        text = track?.title ?: "未检测到播放",
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = MaterialTheme.colorScheme.onBackground,
-                    )
-                    if (track != null && track.artist.isNotEmpty()) {
-                        MarqueeText(
-                            // 网易云用 "/" 分隔多位歌手，换成中点更像常规排版
-                            text = track.artist.replace("/", " · "),
-                            fontSize = 13.sp,
-                            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
-                        )
-                    }
-                }
-
-                if (track != null) {
-                    Icon(
-                        imageVector = if (track.isLiked) Icons.Filled.Favorite
-                                      else Icons.Filled.FavoriteBorder,
-                        contentDescription = if (track.isLiked) "已收藏" else "未收藏",
-                        tint = if (track.isLiked) LIKE_RED
-                               else MaterialTheme.colorScheme.onBackground.copy(alpha = 0.35f),
-                        modifier = Modifier.size(24.dp),
+                    ContentLayer(
+                        track = track,
+                        config = config,
+                        hasPermission = hasPermission,
+                        lyricsState = lyricsState,
+                        contentColor = contentColor,
                     )
                 }
-                IconButton(onClick = onOpenSettings) {
-                    Icon(
-                        imageVector = Icons.Filled.Settings,
-                        contentDescription = "设置",
-                        tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
+            } else {
+                // 简洁模式：早先唯一的形态，一块圆角卡片。
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .padding(16.dp)
+                        .clip(RoundedCornerShape(24.dp))
+                        .background(MaterialTheme.colorScheme.surface)
+                        .then(touchModifier),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    ContentLayer(
+                        track = track,
+                        config = config,
+                        hasPermission = hasPermission,
+                        lyricsState = lyricsState,
+                        contentColor = contentColor,
                     )
                 }
-            }
-
-            if (track != null && track.durationMs > 0) {
-                ProgressRow(
-                    track = track,
-                    modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 12.dp),
-                )
             }
         }
     }
 }
 
-/** 跑马灯每秒滚过的距离。慢到能读清，又不至于长标题绕一圈要等太久。 */
-private val MARQUEE_SPEED_PER_SEC = 30.dp
-/** 两遍文本之间的空隙，避免首尾相接看不出断点。 */
-private val MARQUEE_GAP = 48.dp
-/** 开始滚动前的停顿，让用户先看清开头。整圈滚完回到原点后同样停顿。 */
-private const val MARQUEE_DELAY_MS = 1500L
-
 /**
- * 超长时循环滚动的单行文本，不超长则静态居左显示。
+ * 内容区里的各层：歌词、无权限提示、实验室角标。
  *
- * 没用 Compose 自带的 `basicMarquee`：它要求较新的 foundation 版本且早期为实验 API，
- * 这里自己滚更可控（停顿时长、间隙宽度）。
- *
- * 滚动方式是"跑两遍 + 中间留空隙"的无缝循环：画两份文本，位移走完
- * 「一份宽度 + 间隙」后瞬间归零，视觉上等价于首尾相接地无限滚动。
+ * **不加任何 pointer 修饰符**，触摸事件全部由外层 Box 的
+ * pointerInteropFilter 接收，故不影响手势识别。两个模式共用，
+ * 只有配色随 [contentColor] 变。
  */
 @Composable
-private fun MarqueeText(
-    text: String,
-    fontSize: androidx.compose.ui.unit.TextUnit,
-    color: Color,
-    fontWeight: FontWeight? = null,
+private fun BoxScope.ContentLayer(
+    track: TrackInfo?,
+    config: NudgeConfig,
+    hasPermission: Boolean,
+    lyricsState: LyricsState,
+    contentColor: Color,
 ) {
-    val style = LocalTextStyle.current.merge(
-        TextStyle(fontSize = fontSize, fontWeight = fontWeight, color = color)
-    )
-    val measurer = rememberTextMeasurer()
-    val density = LocalDensity.current
-
-    // clipToBounds 必须加在容器上而非内部滚动的 Row 上：Row 自身宽度是两份文本，
-    // 裁到它的边界等于没裁，滚出去的字会画到相邻控件（收藏图标、设置按钮）上。
-    BoxWithConstraints(
-        modifier = Modifier.fillMaxWidth().clipToBounds(),
-        // 必须显式左对齐：Row 用 requiredWidth 超出了容器，默认居中会让它往左溢出半截
-        contentAlignment = Alignment.CenterStart,
-    ) {
-        val containerWidthPx = with(density) { maxWidth.toPx() }
-        // 无约束测量，拿到文本的真实宽度；直接用 Text 的 onTextLayout 只能拿到被截断后的宽度
-        val textWidthPx = remember(text, style, measurer) {
-            measurer.measure(text = text, style = style, maxLines = 1).size.width.toFloat()
-        }
-        val overflowing = textWidthPx > containerWidthPx
-
-        if (!overflowing) {
-            Text(text = text, style = style, maxLines = 1, overflow = TextOverflow.Clip)
-            return@BoxWithConstraints
-        }
-
-        val gapPx = with(density) { MARQUEE_GAP.toPx() }
-        val cyclePx = textWidthPx + gapPx
-        val offsetX = remember(text) { Animatable(0f) }
-
-        LaunchedEffect(text, cyclePx) {
-            val speedPxPerSec = with(density) { MARQUEE_SPEED_PER_SEC.toPx() }
-            val durationMs = (cyclePx / speedPxPerSec * 1000f).toInt().coerceAtLeast(1)
-            while (true) {
-                delay(MARQUEE_DELAY_MS)
-                offsetX.animateTo(-cyclePx, tween(durationMs, easing = LinearEasing))
-                offsetX.snapTo(0f)
-            }
-        }
-
-        Row(
-            modifier = Modifier
-                .offset { IntOffset(offsetX.value.toInt(), 0) }
-                // requiredWidth 而非 width：后者会被父级约束夹回容器宽度，
-                // 两份文本挤不下，第二份就没了。
-                .requiredWidth(with(density) { (cyclePx * 2).toDp() })
-        ) {
-            Text(text = text, style = style, maxLines = 1, softWrap = false)
-            Spacer(modifier = Modifier.width(MARQUEE_GAP))
-            Text(text = text, style = style, maxLines = 1, softWrap = false)
-        }
-    }
-}
-
-/** 暂停时封面的模糊半径。够看出「蒙上一层」，又不至于认不出是哪张封面。 */
-private val PAUSED_COVER_BLUR = 6.dp
-
-/**
- * 专辑封面。暂停时**模糊 + 叠一个暂停图标**，取代早先那行「已暂停」小字——
- * 文字混在时长旁边，盲操抬眼一瞥根本分不出来，而封面是视线本来就会落到的地方。
- *
- * @param isPaused 播放器处于暂停态。无封面时同样生效（图标叠在占位音符上）。
- */
-@Composable
-private fun AlbumArt(artwork: Bitmap?, isPaused: Boolean) {
-    val shape = RoundedCornerShape(10.dp)
-    // 切歌/暂停时不要硬切，跟随状态渐变一下更顺眼
-    val blurRadius by animateDpAsState(
-        targetValue = if (isPaused) PAUSED_COVER_BLUR else 0.dp,
-        animationSpec = tween(durationMillis = 220),
-        label = "coverBlur",
-    )
-    Box(
-        modifier = Modifier
-            .size(52.dp)
-            .clip(shape)
-            .background(MaterialTheme.colorScheme.surface),
-        contentAlignment = Alignment.Center,
-    ) {
-        if (artwork != null) {
-            Image(
-                bitmap = artwork.asImageBitmap(),
-                contentDescription = "专辑封面",
-                contentScale = ContentScale.Crop,
-                // blur 恒 clip=true 且裁到自己那层的排版矩形，半径为 0 时也照样裁。
-                // 放在 fillMaxSize 之后、外层 clip 之内，光晕才有整块封面可以铺开。
-                modifier = Modifier.fillMaxSize().blur(blurRadius),
-            )
-        } else {
-            Icon(
-                imageVector = Icons.Filled.MusicNote,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f),
-                modifier = Modifier.size(24.dp),
-            )
-        }
-
-        if (isPaused) {
-            // 压暗一层再放图标：浅色封面下白图标本身对比度不够
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.35f))
-            )
-            Icon(
-                imageVector = Icons.Filled.Pause,
-                contentDescription = "已暂停",
-                tint = Color.White.copy(alpha = 0.9f),
-                modifier = Modifier.size(26.dp),
-            )
-        }
-    }
-}
-
-/**
- * 进度条 + 时间。
- *
- * 播放器只在状态变化时回推 position，故进度由 TrackInfo 依据采样时刻推算，
- * 这里靠每秒自增的 tick 驱动重组，让进度条平滑前进而非跟着 1 秒轮询跳动。
- */
-@Composable
-private fun ProgressRow(track: TrackInfo, modifier: Modifier = Modifier) {
-    var nowMs by remember { mutableStateOf(SystemClock.elapsedRealtime()) }
-    LaunchedEffect(track.mediaId, track.isPlaying) {
-        while (true) {
-            nowMs = SystemClock.elapsedRealtime()
-            delay(PROGRESS_TICK_MS)
-        }
+    if (config.lyricsEnabled) {
+        LyricsOverlay(
+            state = lyricsState,
+            track = track,
+            alignment = config.lyricsAlignment,
+            // debug 包里跟随实验室的实时调参，release 恒为默认值。
+            // 见 LyricsAnimOverride：不落盘，杀进程即回默认。
+            spec = LyricsAnimOverride.current,
+            textColor = contentColor,
+        )
     }
 
-    val position = track.currentPositionMs(nowMs)
-    Column(modifier = modifier) {
-        // 手绘而非 LinearProgressIndicator：后者的参数在 material3 各版本间
-        // 有差异（progress 由 Float 改为 lambda），自己画一条圆角进度更稳定。
-        val barColor = MaterialTheme.colorScheme.onBackground
-        val fraction = track.progress(nowMs)
-        Canvas(
+    if (!hasPermission) {
+        Text(
+            text = "需要通知使用权才能控制播放\n点击右上角设置授予",
+            color = contentColor.copy(alpha = 0.5f),
+            fontSize = 14.sp,
+        )
+    }
+
+    // 正在跑实验室参数时的角标。没有它就分不清「刚才那下观感变化
+    // 是参数生效了，还是这首歌本来就长这样」，而调参全靠肉眼比对。
+    // release 恒 false（见 LyricsAnimOverride.isActive），角标不存在。
+    //
+    // 歌词与振动共用**一个**角标：它要回答的是「现在跑的是不是实验室
+    // 调出来的参数」，而这个问题对两者是同一个。拆成两个角标反而要
+    // 用户先分辨是哪一个亮着，而角标本身只是个消歧提示。
+    if (LyricsAnimOverride.isActive || HapticOverride.isActive) {
+        Text(
+            text = "LAB",
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Bold,
+            color = contentColor.copy(alpha = 0.45f),
             modifier = Modifier
-                .fillMaxWidth()
-                .height(3.dp)
-        ) {
-            val radius = CornerRadius(size.height / 2f, size.height / 2f)
-            drawRoundRect(
-                color = barColor.copy(alpha = 0.12f),
-                cornerRadius = radius,
-            )
-            if (fraction > 0f) {
-                drawRoundRect(
-                    color = barColor.copy(alpha = 0.7f),
-                    size = Size(size.width * fraction, size.height),
-                    cornerRadius = radius,
-                )
-            }
-        }
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 4.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Text(
-                text = formatDuration(position),
-                fontSize = 11.sp,
-                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.45f),
-            )
-            // 暂停态改由封面上的图标表达，这里只留总时长——
-            // 两处都说同一件事反而让时长这个信息被稀释
-            Text(
-                text = formatDuration(track.durationMs),
-                fontSize = 11.sp,
-                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.45f),
-            )
-        }
+                .align(Alignment.BottomEnd)
+                .padding(8.dp),
+        )
     }
 }
 

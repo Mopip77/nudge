@@ -57,6 +57,8 @@ class ProfileCodecTest {
             themeMode = ThemeMode.DARK,
             lyricsEnabled = false,
             lyricsAlignment = LyricsAlignment.START,
+            // 取非默认值（默认是简洁）才验得出 round-trip 真的搬运了这个字段
+            displayMode = DisplayMode.ALBUM,
             // 取非默认值（默认是开）才验得出 round-trip 真的搬运了这个字段
             antiMistouchEnabled = false,
         )
@@ -96,6 +98,23 @@ class ProfileCodecTest {
     fun `未知主题名回落默认`() {
         val decoded = ProfileCodec.decode("""{"name":"x","themeMode":"NEON"}""")
         assertEquals(NudgeConfig.DEFAULT.themeMode, decoded?.config?.themeMode)
+    }
+
+    @Test
+    fun `未知显示模式名回落默认`() {
+        val decoded = ProfileCodec.decode("""{"name":"x","displayMode":"HOLOGRAM"}""")
+        assertEquals(NudgeConfig.DEFAULT.displayMode, decoded?.config?.displayMode)
+    }
+
+    /**
+     * 加显示模式之前存的预设里没有这个字段，要解成默认的简洁模式——
+     * 那正是这些老预设存下来时界面的样子，回落成封面模式等于
+     * 悄悄改掉了用户存的观感。
+     */
+    @Test
+    fun `老预设缺显示模式字段时回落为简洁模式`() {
+        val decoded = ProfileCodec.decode("""{"name":"老预设"}""")
+        assertEquals(DisplayMode.SIMPLE, decoded?.config?.displayMode)
     }
 
     @Test

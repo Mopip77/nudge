@@ -15,6 +15,7 @@ class NudgeConfigTest {
         themeMode = ThemeMode.SYSTEM,
         lyricsEnabled = true,
         lyricsAlignment = LyricsAlignment.CENTER,
+        displayMode = DisplayMode.SIMPLE,
         antiMistouchEnabled = true,
     )
 
@@ -105,6 +106,15 @@ class NudgeConfigTest {
         // 若改成默认关，那两层会从「默认开」退化成「默认关」，对盲操这个
         // 核心场景是功能倒退。改默认值前先想清楚这点。
         assertTrue(NudgeConfig.DEFAULT.antiMistouchEnabled)
+    }
+
+    @Test
+    fun `显示模式默认为简洁模式`() {
+        // 与防误触那条相反：这里默认值要守住「升级后观感不变」。
+        // 封面模式把整屏变成专辑封面，而简洁模式不显示大封面，
+        // 在工作场合不会一眼被看出在放歌——这是它保留下来的理由，
+        // 默认切成封面模式等于替用户做了一个会暴露的决定。
+        assertEquals(DisplayMode.SIMPLE, NudgeConfig.DEFAULT.displayMode)
     }
 
     @Test

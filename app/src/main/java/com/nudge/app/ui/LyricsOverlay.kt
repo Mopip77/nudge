@@ -146,6 +146,7 @@ fun LyricsOverlay(
     track: TrackInfo?,
     alignment: LyricsAlignment = LyricsAlignment.CENTER,
     spec: LyricsAnimSpec = LyricsAnimSpec.DEFAULT,
+    textColor: Color? = null,
     modifier: Modifier = Modifier,
 ) {
     val lines = (state as? LyricsState.Loaded)?.lines
@@ -172,6 +173,7 @@ fun LyricsOverlay(
         currentIndex = currentIndex,
         alignment = alignment,
         spec = spec,
+        textColor = textColor,
         modifier = modifier,
     )
 }
@@ -191,9 +193,14 @@ internal fun LyricsScroller(
     currentIndex: Int,
     alignment: LyricsAlignment,
     spec: LyricsAnimSpec,
+    textColor: Color? = null,
     modifier: Modifier = Modifier,
 ) {
     if (lines.isEmpty()) return
+
+    // null 表示跟随主题（简洁模式与实验室）。专辑封面模式必须显式传白色：
+    // 那里的底色由封面决定，白天主题的深色 onSurface 会糊在暗背景上读不出来。
+    val lyricColor = textColor ?: MaterialTheme.colorScheme.onSurface
 
     // 前奏期间把第一行当作"即将唱的行"摆到锚点位置
     val anchorIndex = if (currentIndex < 0) 0 else currentIndex
@@ -346,6 +353,7 @@ internal fun LyricsScroller(
                         shiftEpoch = shiftEpoch,
                         alignment = alignment,
                         spec = spec,
+                        textColor = lyricColor,
                         onHeightMeasured = { rowHeights[index] = it },
                     )
                 }
@@ -379,6 +387,7 @@ private fun LyricRow(
     shiftEpoch: Int,
     alignment: LyricsAlignment,
     spec: LyricsAnimSpec,
+    textColor: Color,
     onHeightMeasured: (Int) -> Unit,
 ) {
     // 每行各自追 targetOffsetY，**时长相同、缓动曲线不同**：
@@ -520,7 +529,7 @@ private fun LyricRow(
             // 两档都落在真实字体文件上（只随包了 Medium 和 Bold 两个档），
             // 不会触发系统的合成伪粗体——伪粗体在中文上会把笔画糊成一团。
             fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.onSurface,
+            color = textColor,
             // 折行上限 3 行：绝大多数歌词两行够用，留第三行兜底超长句；
             // 再多就会把上下文行全挤出屏幕，反而看不出唱到哪了
             maxLines = 3,

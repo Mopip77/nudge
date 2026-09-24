@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.nudge.app.BuildConfig
 import com.nudge.app.config.ActionType
+import com.nudge.app.config.DisplayMode
 import com.nudge.app.config.LyricsAlignment
 import com.nudge.app.config.NudgeConfig
 import com.nudge.app.config.ProfileSlot
@@ -56,6 +57,7 @@ fun SettingsScreen(
     onThemeChange: (ThemeMode) -> Unit,
     onLyricsEnabledChange: (Boolean) -> Unit,
     onLyricsAlignmentChange: (LyricsAlignment) -> Unit,
+    onDisplayModeChange: (DisplayMode) -> Unit,
     onAntiMistouchChange: (Boolean) -> Unit,
     onProfileSave: (Int, String) -> Unit,
     onProfileLoad: (Int) -> Unit,
@@ -243,7 +245,32 @@ fun SettingsScreen(
             onClick = { onAntiMistouchChange(!config.antiMistouchEnabled) },
         )
 
+        // 独立成组而不是并入「主题」：明暗主题与布局形态是两件事，
+        // 混在一起会让人以为选了封面模式就不能调主题。
+        // 两者确有交集——封面模式恒为暗底白字，不受主题影响，这写在 hint 里。
+        SectionTitle("显示模式")
+        DisplayMode.entries.forEach { mode ->
+            OptionRow(
+                label = mode.displayName,
+                hint = mode.hint,
+                selected = config.displayMode == mode,
+                onClick = { onDisplayModeChange(mode) },
+            )
+        }
+
         SectionTitle("主题")
+        // 封面模式的播放界面恒为暗底白字，主题只影响设置页。不说明的话，
+        // 用户在封面模式下切主题会以为是开关坏了。挂在分组下**说一次**，
+        // 不挂进每个 OptionRow 的 hint——三个选项各印一遍同样的话，
+        // 反而像是在描述三个不同的选项。
+        if (config.displayMode == DisplayMode.ALBUM) {
+            Text(
+                text = "专辑封面模式的播放界面恒为深色，此项只影响设置页与简洁模式",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
+                modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp),
+            )
+        }
         ThemeMode.entries.forEach { mode ->
             OptionRow(
                 label = mode.displayName,

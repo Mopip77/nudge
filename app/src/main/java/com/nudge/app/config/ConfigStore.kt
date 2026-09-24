@@ -44,6 +44,26 @@ enum class LyricsAlignment(val displayName: String) {
 }
 
 /**
+ * 播放界面的视觉外壳。**与 [NudgeConfig.lyricsEnabled] 正交**：
+ * 本项管「壳」（卡片 vs 整屏封面），歌词显隐仍由 lyricsEnabled 管，
+ * 于是四种组合都成立。两者合并成一个三选一枚举会破坏
+ * [ActionType.TOGGLE_LYRICS] 的语义——那个动作切的是歌词，不是布局。
+ */
+enum class DisplayMode(val displayName: String, val hint: String) {
+    /**
+     * 早先唯一的形态：顶栏 + 一块圆角卡片。默认值。
+     *
+     * 默认留在这里而不是新的封面模式：升级后观感不变是默认值的本分，
+     * 且这个形态不显示大封面，在工作场合不会一眼被看出在放歌——
+     * 这是它作为独立选项保留下来的理由，不只是为了兼容。
+     */
+    SIMPLE("简洁模式", "卡片式布局，不显示专辑封面，适合工作场合"),
+
+    /** 整屏专辑封面，中间清晰、上下模糊羽化延伸。 */
+    ALBUM("专辑封面模式", "整屏专辑封面，沉浸式"),
+}
+
+/**
  * 一个动作可绑多个手势（如「下一首」同时接受双击和两指双击），
  * 但一个手势只能属于一个动作——否则一次手势会触发两个动作。
  * 这条反向约束由 [gestureToAction] 的读取口径和 [ConfigStore.addBinding] 的抢占共同保证。
@@ -55,6 +75,8 @@ data class NudgeConfig(
     /** 关闭后既不显示歌词，也不发起歌词网络请求。 */
     val lyricsEnabled: Boolean,
     val lyricsAlignment: LyricsAlignment,
+    /** 播放界面的视觉外壳，与 [lyricsEnabled] 正交。见 [DisplayMode]。 */
+    val displayMode: DisplayMode,
     /**
      * 防误触模式总开关，一次管三层：沉浸式粘性 + 全屏手势排除区、
      * 返回键双击才退出、屏幕固定。
@@ -89,6 +111,7 @@ data class NudgeConfig(
             themeMode = ThemeMode.SYSTEM,
             lyricsEnabled = true,
             lyricsAlignment = LyricsAlignment.CENTER,
+            displayMode = DisplayMode.SIMPLE,
             antiMistouchEnabled = true,
         )
     }
@@ -152,6 +175,9 @@ class ConfigStore(private val context: Context) {
             lyricsAlignment = prefs[LYRICS_ALIGNMENT_KEY]
                 ?.let { name -> LyricsAlignment.entries.firstOrNull { it.name == name } }
                 ?: NudgeConfig.DEFAULT.lyricsAlignment,
+            displayMode = prefs[DISPLAY_MODE_KEY]
+                ?.let { name -> DisplayMode.entries.firstOrNull { it.name == name } }
+                ?: NudgeConfig.DEFAULT.displayMode,
             antiMistouchEnabled = prefs[ANTI_MISTOUCH_KEY]
                 ?: NudgeConfig.DEFAULT.antiMistouchEnabled,
         )
@@ -192,6 +218,10 @@ class ConfigStore(private val context: Context) {
 
     suspend fun setLyricsAlignment(alignment: LyricsAlignment) {
         context.dataStore.edit { it[LYRICS_ALIGNMENT_KEY] = alignment.name }
+    }
+
+    suspend fun setDisplayMode(mode: DisplayMode) {
+        context.dataStore.edit { it[DISPLAY_MODE_KEY] = mode.name }
     }
 
     suspend fun setAntiMistouchEnabled(enabled: Boolean) {
@@ -236,6 +266,7 @@ class ConfigStore(private val context: Context) {
             prefs[THEME_KEY] = config.themeMode.name
             prefs[LYRICS_ENABLED_KEY] = config.lyricsEnabled
             prefs[LYRICS_ALIGNMENT_KEY] = config.lyricsAlignment.name
+            prefs[DISPLAY_MODE_KEY] = config.displayMode.name
             prefs[ANTI_MISTOUCH_KEY] = config.antiMistouchEnabled
         }
         return stored
@@ -251,6 +282,7 @@ class ConfigStore(private val context: Context) {
         val THEME_KEY = stringPreferencesKey("theme_mode")
         val LYRICS_ENABLED_KEY = booleanPreferencesKey("lyrics_enabled")
         val LYRICS_ALIGNMENT_KEY = stringPreferencesKey("lyrics_alignment")
+        val DISPLAY_MODE_KEY = stringPreferencesKey("display_mode")
         // 刻意换新 key 而不沿用旧的 screen_pinning_enabled：旧值的语义是
         // 「是否固定屏幕」，与新的「是否启用整套防误触」不等价。把旧的 false
         // 迁移过来会顺带关掉用户从没关过的沉浸式与双击返回，比直接丢弃更糟。
