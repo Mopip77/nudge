@@ -25,10 +25,20 @@ enum class CoverAspect(val displayName: String, val wRatio: Int, val hRatio: Int
 }
 
 /**
- * 默认比例。先取方形：现有渲染（[com.nudge.app.ui.AlbumBackdrop]）的清晰档
- * 按方形摆放，换比例要连带改排版，而本次只先把「更清晰」这个确定的收益拿到。
+ * 默认比例。
+ *
+ * 取 **4:5 竖**而不是方形：竖屏上方图的清晰区只占屏幕高度的一半多一点，
+ * 上下两大片全是模糊延伸；竖构图能让清晰区自然长高，观感更满。
+ *
+ * 不取更极端的 2:3 / 9:16：`?param=` 做的是**居中裁切**，越竖裁掉的上下
+ * 越多，而专辑封面的主体（人脸、标题字）通常就在上下三分之一处，
+ * 裁过头会把它们切掉。4:5 是「明显比方图高」与「几乎不伤构图」的平衡点
+ * （2:3 要裁掉原图的 33%，4:5 只裁 20%）。
+ *
+ * 渲染侧的清晰区高度跟随图自身比例（见 `AlbumBackdrop`），
+ * 所以改这个值排版会自动跟上，不必两处同时改。
  */
-val DEFAULT_COVER_ASPECT = CoverAspect.SQUARE
+val DEFAULT_COVER_ASPECT = CoverAspect.PORTRAIT_4_5
 
 /**
  * 请求参数的计算结果。带上实际尺寸是给实验室显示用的——
