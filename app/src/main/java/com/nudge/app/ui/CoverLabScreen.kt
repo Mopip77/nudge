@@ -42,7 +42,8 @@ import com.nudge.app.media.ArtworkCache
 import com.nudge.app.media.CoverAspect
 import com.nudge.app.media.DEFAULT_COVER_ASPECT
 import com.nudge.app.media.TrackInfo
-import com.nudge.app.media.paramFor
+import com.nudge.app.media.squareEdgeFor
+import kotlin.math.roundToInt
 
 /** 预览框的高度。够看出上下延伸的层次，又不至于把下面的档位挤出屏幕。 */
 private val PREVIEW_HEIGHT = 340.dp
@@ -92,21 +93,21 @@ fun CoverLabScreen(track: TrackInfo?, onBack: () -> Unit) {
     // 是同一类问题。
     var reloadEpoch by remember { mutableStateOf(0) }
 
+    // **aspect 不在 key 里**：请求恒为方图，换档是纯渲染侧的事，
+    // 应当立即重绘、零网络。早先它是 key，每换一档都白重拉一次。
     val mediaId = track?.mediaId
-    LaunchedEffect(mediaId, aspect, reloadEpoch) {
+    LaunchedEffect(mediaId, reloadEpoch) {
         actualSize = null
         if (mediaId.isNullOrBlank()) {
             preview = track?.artwork
             return@LaunchedEffect
         }
         loading = true
-        val hiRes = ArtworkCache.load(mediaId, aspect, screenWidthPx)
+        val hiRes = ArtworkCache.load(mediaId, screenWidthPx)
         loading = false
         preview = hiRes?.bitmap ?: track.artwork
-        // 量的是**实际解码出来的**尺寸而不是请求的尺寸：接口在长边超限时
-        // 会静默回落成方图，只有量解码结果才看得见这件事。
         actualSize = hiRes?.let { it.bitmap.width to it.bitmap.height }
-        sourceEdge = hiRes?.sourceEdge ?: sourceEdge
+        sourceEdge = hiRes?.sourceShortEdge ?: sourceEdge
     }
 
     // 同 LyricsLabScreen：同步写在一个 effect 里，touched 同时作为 key，
@@ -142,9 +143,10 @@ fun CoverLabScreen(track: TrackInfo?, onBack: () -> Unit) {
         }
 
         Text(
-            text = "网易云的 ?param=WxH 做的是居中裁切而非拉伸，所以非方比例会把" +
-                "封面上下裁掉一截。请求长边超过原图时接口会静默回落成方图——" +
-                "下面每档印的是实际会拿到的尺寸。",
+            text = "封面恒按方图请求，比例完全在渲染侧裁（居中裁，与网易云 " +
+                "?param 的结果逐像素相同）。所以换档立即生效、不重新联网，" +
+                "每一档都真的有效——不会再被接口静默回落成方图。" +
+                "越竖越满，但左右切得越多，封面上贴边的字会先没。",
             fontSize = 11.sp,
             color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
             modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp),
@@ -161,6 +163,7 @@ fun CoverLabScreen(track: TrackInfo?, onBack: () -> Unit) {
         ) {
             AlbumBackdrop(
                 artwork = preview,
+                aspect = aspect,
                 lyricsMode = false,
                 headerHeight = 0.dp,
             )
@@ -173,7 +176,7 @@ fun CoverLabScreen(track: TrackInfo?, onBack: () -> Unit) {
             loading = loading,
         )
 
-        SectionTitle("请求比例")
+        SectionTitle("裁切比例")
         CoverAspect.entries.forEach { option ->
             AspectRow(
                 aspect = option,
@@ -235,14 +238,15 @@ private fun SourceInfo(
             "MediaSession 封面：" +
                 (base?.let { "${it.width}×${it.height}" } ?: "无")
         )
-        add("网易云原图：" + (sourceEdge?.let { "$it×$it" } ?: "未知"))
+        add("网易云原图短边：" + (sourceEdge?.let { "$it" } ?: "未知"))
         add(
             when {
-                loading -> "高清封面：拉取中…"
+                loading -> "高清方图：拉取中…"
+                // 恒为方图，显示的形状由上面选的比例裁出来。
                 actualSize != null ->
-                    "高清封面：${actualSize.first}×${actualSize.second}（正在用）"
+                    "高清方图：${actualSize.first}×${actualSize.second}（正在用）"
                 // 非网易云播放器、无网络、接口改版都走这条。
-                else -> "高清封面：未拉到，正在用 MediaSession 那张"
+                else -> "高清方图：未拉到，正在用 MediaSession 那张"
             }
         )
     }
@@ -261,8 +265,8 @@ private fun SourceInfo(
 /**
  * 一个比例档位。
  *
- * 标注的是**这一档实际会请求的尺寸**，按当前已知的源图边长算。源图边长
- * 未知时（还没拉过）不标——瞎标一个会让人以为那就是结果。
+ * 标注的是**裁切后在屏幕上的框尺寸**（宽恒为屏幕宽，高按比例），
+ * 不再是请求尺寸——请求恒为方图，标请求尺寸所有档都一样，没有区分度。
  */
 @Composable
 private fun AspectRow(
@@ -272,17 +276,15 @@ private fun AspectRow(
     selected: Boolean,
     onClick: () -> Unit,
 ) {
-    val param = sourceEdge?.let { paramFor(aspect, it, targetWidth) }
-    // 这一档铺不满屏幕宽度，也就是说渲染时仍要上采样。
+    // 实际拿到的方图边长，受源图短边限制。
+    val edge = sourceEdge?.let { squareEdgeFor(it, targetWidth) }
+    val boxHeight = (targetWidth * aspect.heightOverWidth).roundToInt()
+    // 拿到的方图铺不满屏幕宽度，渲染时仍要上采样。
     //
-    // 标灰的口径是「选了也达不到屏幕分辨率」，**不是**「这一档坏了」——
-    // `paramFor` 永远保住比例，没有哪一档会退化成方图（那个静默回落
-    // 只发生在不限幅地直接请求时，正是 paramFor 要防住的事）。
-    //
-    // 早先拿「长边 < targetWidth」当判据，结果原图只有 800 的歌
-    // **五档全灰**，这个信号就失去了区分度。改成只看宽度：方形在小原图下
-    // 同样铺不满，该灰就灰，但各档之间仍分得出高下。
-    val underfilled = param != null && param.width < targetWidth
+    // 标灰的口径是「达不到屏幕分辨率」，**不是**「这一档坏了」——
+    // 现在没有哪一档会坏：比例是自己裁的，接口那个静默回落已经不在链路里。
+    // 所以这个信号对所有档是同一个值（受限于源图），只是提示这首歌的原图偏小。
+    val underfilled = edge != null && edge < targetWidth
     val alpha = if (underfilled) 0.4f else 1f
 
     Row(
@@ -303,11 +305,11 @@ private fun AspectRow(
             )
             Text(
                 text = when {
-                    param == null -> "尚未拉到源图，尺寸未知"
+                    edge == null -> "${aspect.ratioLabel} → 框 ${targetWidth}×$boxHeight"
                     underfilled ->
-                        "${aspect.ratioLabel} → ${param.width}×${param.height}" +
-                            "（受限于原图 $sourceEdge，铺不满 ${targetWidth}px 宽）"
-                    else -> "${aspect.ratioLabel} → ${param.width}×${param.height}"
+                        "${aspect.ratioLabel} → 框 ${targetWidth}×$boxHeight" +
+                            "（方图仅 $edge，受限于原图短边 $sourceEdge）"
+                    else -> "${aspect.ratioLabel} → 框 ${targetWidth}×$boxHeight（方图 $edge）"
                 },
                 fontSize = 11.sp,
                 fontFamily = FontFamily.Monospace,

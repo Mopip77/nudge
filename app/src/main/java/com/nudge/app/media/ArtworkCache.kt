@@ -22,7 +22,15 @@ import kotlinx.coroutines.withContext
  */
 object ArtworkCache {
 
-    private data class Key(val mediaId: String, val aspect: CoverAspect)
+    /**
+     * 键里**没有比例**：请求恒为方图，比例是渲染侧的事，改比例不影响
+     * 拉回来的字节。
+     *
+     * 早先键里带着 aspect，那会让实验室里**每换一档比例都白重拉一次网络**
+     * （键变了 → 未命中 → 请求同一张图）。而换比例现在本该是纯渲染侧的事，
+     * 应当立即生效、零网络。
+     */
+    private data class Key(val mediaId: String, val targetWidth: Int)
 
     private var key: Key? = null
     private var cached: ArtworkFetcher.Result? = null
@@ -35,16 +43,15 @@ object ArtworkCache {
      */
     suspend fun load(
         mediaId: String,
-        aspect: CoverAspect,
         targetWidth: Int,
     ): ArtworkFetcher.Result? {
-        val want = Key(mediaId, aspect)
+        val want = Key(mediaId, targetWidth)
         synchronized(this) {
             if (key == want) return cached
         }
 
         val fetched = withContext(Dispatchers.IO) {
-            ArtworkFetcher.fetch(mediaId, aspect, targetWidth)
+            ArtworkFetcher.fetch(mediaId, targetWidth)
         } ?: return null
 
         synchronized(this) {

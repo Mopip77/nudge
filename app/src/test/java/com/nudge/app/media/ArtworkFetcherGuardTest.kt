@@ -22,7 +22,7 @@ class ArtworkFetcherGuardTest {
             "12345abc",
             "content://media/external/audio/media/42",
         ).forEach {
-            assertNull("「$it」不该走到网络请求", ArtworkFetcher.fetch(it, CoverAspect.SQUARE, 1080))
+            assertNull("「$it」不该走到网络请求", ArtworkFetcher.fetch(it, 1080))
         }
     }
 }

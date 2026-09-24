@@ -126,7 +126,13 @@ fun TrackpadScreen(
                 // 高清那张拉到了就用它，没拉到（无网络、非网易云、还在拉）
                 // 就继续用 MediaSession 那张 363 的当占位。不等高清图到位再显示——
                 // 切歌瞬间封面空一下比糊一点更难看。
+                //
+                // 两张图都是方的，裁进同一个 aspect 框，所以这次替换
+                // **不改变任何几何**，只是变清晰（再叠一层淡入，见 artworkKey）。
                 artwork = track?.hiResArtwork ?: track?.artwork,
+                aspect = CoverOverride.current,
+                // 同一首歌内换图才淡入；换歌直接换。
+                artworkKey = track?.mediaId.orEmpty(),
                 // 歌词开着时退化成统一的模糊氛围层，清晰封面淡出
                 lyricsMode = config.lyricsEnabled,
                 headerHeight = headerHeight,

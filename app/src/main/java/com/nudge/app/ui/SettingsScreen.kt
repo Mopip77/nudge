@@ -227,12 +227,12 @@ fun SettingsScreen(
             )
         }
 
-        // 封面实验室挂在「显示模式」下：它调的是封面模式下那张高清图的
-        // 请求比例，与另两个实验室并列但归属不同的分组。
+        // 封面实验室挂在「显示模式」下：它调的是封面模式下封面的裁切比例，
+        // 与另两个实验室并列但归属不同的分组。
         if (BuildConfig.DEBUG) {
             LabRow(
                 label = "封面实验室",
-                hint = "逐档试高清封面的请求比例，仅 debug 包可见",
+                hint = "逐档试封面的裁切比例，仅 debug 包可见",
                 onClick = onOpenCoverLab,
             )
         }

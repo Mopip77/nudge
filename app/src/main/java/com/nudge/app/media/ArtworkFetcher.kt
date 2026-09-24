@@ -23,6 +23,13 @@ import java.net.URL
  * 返回的是完全不相干的两张专辑，而盲操下匹配错了会显示另一张专辑的封面，
  * 用户不一定察觉。id 查是精确的。
  *
+ * ## 恒请求方图
+ *
+ * 比例是渲染侧的事（见 [CoverAspect]）。这里只负责拿一张**尽可能清晰的
+ * 方图**，因为方图请求永远不会触发接口那个「长边超限就连比例一起丢掉」
+ * 的静默回落，而且与 MediaSession 那张 363 方图形状一致——两者在渲染侧
+ * 走同一套裁切，替换时几何恒等。
+ *
  * 形状照搬 [com.nudge.app.lyrics.LyricsFetcher]：`HttpURLConnection`、同样的头、
  * 5 秒超时、任何失败返回 null。不引 OkHttp/Coil——总共就这一个请求。
  */
@@ -31,31 +38,34 @@ object ArtworkFetcher {
     private const val TIMEOUT_MS = 5000
 
     /**
-     * 拉一张高清封面。**阻塞调用，必须在 IO 线程执行。**
+     * 拉一张高清封面，**恒为方图**。**阻塞调用，必须在 IO 线程执行。**
      *
      * 任何失败返回 null，调用方降级为继续用 MediaSession 那张 363 的图——
      * 无网络、非网易云播放器、接口改版都走这条，不打扰盲操。
      *
+     * 不接受比例参数：比例是**渲染侧**的事（见 [CoverAspect]）。
+     * 这样低清那张方图与这里拉到的方图在渲染时走同一套裁切，
+     * 替换时几何恒等，只有清晰度变化。
+     *
      * @param targetWidth 渲染需要的宽度，通常是屏幕宽度
      */
-    fun fetch(songId: String, aspect: CoverAspect, targetWidth: Int): Result? {
+    fun fetch(songId: String, targetWidth: Int): Result? {
         // 非网易云播放器（skipTargetController 会回落到任意正在播放的会话）
         // 的 mediaId 不是数字 id，查了没意义，不浪费一次请求。
         if (songId.isBlank() || !songId.all { it.isDigit() }) return null
 
         val picUrl = fetchPicUrl(songId) ?: return null
-        val edge = probeSourceEdge(picUrl)
-        val param = paramFor(aspect, edge, targetWidth)
-        val bitmap = decode("$picUrl?param=${param.query}") ?: return null
-        return Result(bitmap, edge)
+        val shortEdge = probeSourceShortEdge(picUrl)
+        val edge = squareEdgeFor(shortEdge, targetWidth)
+        val bitmap = decode("$picUrl?param=${edge}y$edge") ?: return null
+        return Result(bitmap, shortEdge)
     }
 
     /**
-     * 拉取结果。带上 [sourceEdge] 是给封面实验室用的：
-     * 各档「会不会因超限而被静默回落成方图」只能按源图边长算，
-     * 而那个数字只有这次请求知道。
+     * 拉取结果。带上 [sourceShortEdge] 是给封面实验室显示用的
+     * （「这首歌的原图有多大」决定了能拿到多清晰的图）。
      */
-    data class Result(val bitmap: Bitmap, val sourceEdge: Int)
+    data class Result(val bitmap: Bitmap, val sourceShortEdge: Int)
 
     private fun fetchPicUrl(songId: String): String? {
         val body = get("https://music.163.com/api/song/detail?ids=%5B$songId%5D") {
@@ -73,11 +83,11 @@ object ArtworkFetcher {
     }
 
     /**
-     * 探测原图长边。**必须探，不能省。**
+     * 探测原图**短边**。
      *
-     * 请求长边超过原图时接口会**静默回落成方图**（实测：1500 的源上请求
-     * `1080y1620` 返回的是 1500×1500，既不是请求的比例也没有错误提示），
-     * 所以非方比例必须先知道原图多大才能算出安全的请求尺寸。
+     * 求方图时能裁出的最大方块由短边决定，按长边算会超出去。
+     * **原图不一定是方的**——实测歌曲 28643004 的原图是 852×1136（3:4 竖）。
+     * 早先这里取的是长边，注释里也写着「网易云的原图恒为方形」，是错的。
      *
      * `song/detail` 的 album 对象里**没有** `picWidth`/`picHeight`
      * （真机取证：整个 album 只有 picId / picUrl / pic 等字段，没有尺寸）。
@@ -89,10 +99,11 @@ object ArtworkFetcher {
      * （返回 206 + `content-range`），4KB 足够覆盖 JPEG 的 SOF 段——
      * 比下整张原图（实测 0.8~2.8MB）便宜两三个数量级。
      *
-     * 探测失败（CDN 不认 Range、头被截断）时回落到 [FALLBACK_EDGE]：
-     * 宁可请求得保守一点拿到一张小些的图，也好过超限触发静默回落。
+     * 探测失败（CDN 不认 Range、头被截断）时回落到 [FALLBACK_EDGE]。
+     * 现在探测失败**不再有几何后果**：请求恒为方图，算小了只是拿到一张
+     * 小些的图。早先它还要防「超限触发静默回落丢掉比例」，责任重得多。
      */
-    private fun probeSourceEdge(picUrl: String): Int {
+    private fun probeSourceShortEdge(picUrl: String): Int {
         val bounds = get(picUrl, range = "bytes=0-$PROBE_BYTES") { stream ->
             BitmapFactory.Options().apply {
                 inJustDecodeBounds = true
@@ -100,8 +111,7 @@ object ArtworkFetcher {
             }
         } ?: return FALLBACK_EDGE
 
-        // 非方原图没遇到过，但按长边限幅才是安全的方向。
-        val edge = maxOf(bounds.outWidth, bounds.outHeight)
+        val edge = minOf(bounds.outWidth, bounds.outHeight)
         return if (edge > 0) edge else FALLBACK_EDGE
     }
 
@@ -141,8 +151,8 @@ object ArtworkFetcher {
     private const val PROBE_BYTES = 4095
 
     /** 探测失败时的保守假设，取实测见过的较小原图边长。 */
-    // 取 640 而非更大的值：实测见过 640 的原图（老专辑），按它兜底才不会超限。
-    // 方形档位不受影响（方形永远不会超限，见 paramFor），只有非方档位会被
-    // 这个保守值压小一点——探测失败本就是个罕见的降级路径。
+    // 实测原图边长按歌不同（348 / 553 / 640 / 800 / 1500 / 3000 / 6000 都见过），
+    // 取 640 兜底。请求恒为方图，所以超了也只是拿回原图本身、不丢比例，
+    // 这个值算保守只会让这条罕见的降级路径少几个像素。
     private const val FALLBACK_EDGE = 640
 }

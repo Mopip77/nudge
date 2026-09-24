@@ -1,5 +1,6 @@
 package com.nudge.app.ui
 
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
@@ -12,7 +13,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.drawWithContent
@@ -26,6 +31,8 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import android.graphics.Bitmap
+import com.nudge.app.media.CoverAspect
+import com.nudge.app.media.coverHeightRatio
 
 /**
  * 梯度模糊的分层。每层都是**同一张图、同一套排版**，只是模糊半径递增，
@@ -90,6 +97,26 @@ private const val HEADER_SCRIM_ALPHA = 0.45f
 private const val MODE_CROSSFADE_MS = 300
 
 /**
+ * 低清换高清的淡入时长。
+ *
+ * 几何已经恒定了（见 [com.nudge.app.media.coverHeightRatio]），这一下只是
+ * 「变清晰」。不淡入的话仍是一次可见的硬切：363 上采样到 1080 再突然换成
+ * 真 1080，锐度跳变肉眼看得出来。
+ */
+private const val ARTWORK_CROSSFADE_MS = 250
+
+/**
+ * 上一张封面，连同它属于哪首歌。
+ *
+ * 带 key 是为了区分「同一首歌换了张更清晰的图」（该淡入）与「换歌」
+ * （该直接换）——只比 bitmap 不相等的话两者分不开。
+ */
+private data class PreviousArtwork(
+    val key: String,
+    val bitmap: androidx.compose.ui.graphics.ImageBitmap,
+)
+
+/**
  * 专辑封面模式的背景：**一张整屏封面，清晰度自中心向上下连续衰减**。
  *
  * ## 为什么不是「方形封面 + 外围模糊背景」
@@ -122,8 +149,22 @@ private const val MODE_CROSSFADE_MS = 300
  * 仍是 363 那张，排版一行不用改。梯度模糊在低清图下反而帮了忙——
  * 上下本来就要糊，只有中间一条需要顶着上采样。
  *
+ * ## 比例由调用方给定，不从图里推断
+ *
+ * 排版高度只取决于 [aspect]，与传进来的图是方是竖无关（见
+ * [com.nudge.app.media.coverHeightRatio]）。这是**本组件最重要的不变式**：
+ * MediaSession 那张 363 是方图，高清那张也是方图，两者算出同一个框，
+ * 于是高清图到位替换的那一刻**几何恒等，只有清晰度变化**。
+ *
+ * 早先是按图自身宽高比排版的，而那时高清图是向接口要的 4:5——两张图
+ * 比例不同，替换时整块封面会 zoom 一下。
+ *
  * **纯展示，不接触摸**：本组件不加任何 pointer 修饰符，与 [LyricsOverlay] 同一口径。
  *
+ * @param aspect 裁切比例。图会被居中裁进这个形状的框里。
+ * @param artworkKey 用来区分「换歌」与「同一首歌换清晰度」的标识，通常传
+ *   mediaId。相同则新图淡入（见 [ARTWORK_CROSSFADE_MS]），不同则直接换——
+ *   换歌时让旧封面淡出反而像卡顿。
  * @param lyricsMode 歌词是否正在显示。为 true 时清晰层整体淡出、遮罩加深，
  *   整屏退化成统一的模糊氛围层。切换走 crossfade（见 [MODE_CROSSFADE_MS]）。
  * @param headerHeight 顶栏占的高度，顶栏的压暗渐变按它铺。
@@ -131,9 +172,11 @@ private const val MODE_CROSSFADE_MS = 300
 @Composable
 fun AlbumBackdrop(
     artwork: Bitmap?,
+    aspect: CoverAspect,
     lyricsMode: Boolean,
     headerHeight: Dp,
     modifier: Modifier = Modifier,
+    artworkKey: String = "",
 ) {
     // 没封面时只铺一层纯黑：此时没有任何图像可延伸，硬凑一个主色块
     // 还得先采样 bitmap，而「未检测到播放」本就是个短暂的过渡态。
@@ -157,14 +200,52 @@ fun AlbumBackdrop(
         label = "scrimAlpha",
     )
 
+    // 低清→高清的淡入。几何已经恒定，这里只让锐度的变化柔和一点。
+    //
+    // 记住上一张图，新图淡入期间垫在下面。**只在同一首歌内淡入**：
+    // artworkKey 变了就是换歌，直接换（换歌时旧封面淡出像卡顿）。
+    //
+    // 旧图的强引用留在这个 remember 里，恰好也满足 ArtworkCache
+    // 「不主动 recycle」的口径——正在淡出的那张若被回收，
+    // 合成那一帧会抛 "trying to use a recycled bitmap"。
+    // **判定与起始值都在组合期算**，不能只放在 LaunchedEffect 里。
+    //
+    // effect 在组合与布局提交**之后**才跑，若把「垫底图是谁」和 `snapTo(0f)`
+    // 都交给它，帧序会变成「新图先以上一轮的 alpha=1 整张画出去 → 下一帧才
+    // 被按回 0 → 再淡上来」。那一帧的锐度会先冲到高清、再掉回去，
+    // 实测录屏里就是一个肉眼可见的回跳（1.444 → 1.046 → 再爬上来）。
+    // 这与歌词那边 pendingShift 必须在组合期累加是同一类问题。
+    val previous = remember { mutableStateOf<PreviousArtwork?>(null) }
+    val fade = remember { Animatable(1f) }
+    // 淡入期间垫在下面的那张。null 表示不需要垫（换歌、首次出现、已淡完）。
+    val underlay = remember { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
+    val prev = previous.value
+    if (prev == null || prev.bitmap != bitmap) {
+        // 同一首歌换了张更清晰的图才淡入；换歌、首次出现都直接到位——
+        // 换歌时让旧封面淡出反而像卡顿。
+        underlay.value = prev?.takeIf { it.key == artworkKey }?.bitmap
+        previous.value = PreviousArtwork(artworkKey, bitmap)
+    }
+    LaunchedEffect(bitmap, artworkKey) {
+        if (underlay.value != null) {
+            fade.snapTo(0f)
+            fade.animateTo(1f, tween(ARTWORK_CROSSFADE_MS))
+            // 淡完丢掉旧图的强引用，不攒着（高清图一张 6.5MB）。
+            underlay.value = null
+        } else {
+            fade.snapTo(1f)
+        }
+    }
+
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
-        // 所有层共用**同一套排版**：宽度铺满、高度按图自身的宽高比，
+        // 所有层共用**同一套排版**：宽度铺满、高度按**目标比例**，
         // 竖直方向按 SHARP_CENTER 摆放。这是「看不出边界」的前提——
         // 各层像素一一对应，过渡处只是同一个像素在不同模糊程度之间插值。
         //
-        // 高度**跟随图自身比例**而不是写死成方形：竖图（如 4:5）请求回来
-        // 是 864×1080，塞进方框里会被压扁。按真实比例摆，竖图占的竖向
-        // 空间更大，清晰区也就更大——这正是用竖屏比例的意义。
+        // 高度只取决于 aspect，**与图自身的宽高比无关**。早先是按图自身
+        // 比例算的（`bitmap.height / bitmap.width`），那时高清图是向接口
+        // 要的 4:5：低清方图得 1.0、高清得 1.25，替换那一刻整块封面 zoom
+        // 一下。现在两张图都是方的、都裁进同一个框，几何恒等。
         //
         // 不能用 ContentScale.Crop 铺满整个竖屏：方图填满 1080×2400
         // 要放大 6.6 倍，只能看到中间一条竖缝（实测就是「一张脸加半个肩膀」），
@@ -173,51 +254,66 @@ fun AlbumBackdrop(
         //
         // 也**不设高度上限**。早先夹了个 0.72，结果竖图上下沿露出两道硬横边
         // （实测单行亮度跳变 28.5 / 19.1，方图版本只有 0.8 / 1.5）：
-        // 蒙版的渐变跨度是按「本层边缘」算的，夹掉高度之后图被 FillBounds
-        // 压进更矮的框里，而渐变仍按原比例铺，于是在收干净之前就到了边缘。
+        // 蒙版的渐变跨度是按「本层边缘」算的，夹掉高度之后图被压进更矮的
+        // 框里，而渐变仍按原比例铺，于是在收干净之前就到了边缘。
         //
         // 要限制清晰区的大小得靠 reach 的系数（见下），那是蒙版内部的量，
         // 改它不会动到「渐变一直铺到本层边缘」这个前提。
-        val imageAspect = bitmap.height.toFloat() / bitmap.width.toFloat()
-        val coverHeightRatio = maxWidth / maxHeight * imageAspect
+        val coverHeightRatio = coverHeightRatio(aspect, maxWidth.value, maxHeight.value)
         val coverTop = SHARP_CENTER - coverHeightRatio / 2f
 
-        // 最糊的那一档打底，且**纵向放大到铺满全屏**——它只提供延伸的色块与
-        // 纹理，看不清细节，拉伸不影响观感，却能保证上下最远端不露出背景色。
-        BlurLayer(
-            bitmap = bitmap,
-            blur = BLUR_STEPS.last(),
-            scale = BLUR_SCALES.last(),
-            fillScreen = true,
-        )
-
-        // 其余各档由糊到清依次叠上去，每层带一个「离清晰区越远越透明」的蒙版。
-        // 倒序是因为清晰的要压在模糊的上面。
-        for (i in BLUR_STEPS.lastIndex - 1 downTo 0) {
-            // 这一层「完全不透明」的竖向半径，越清晰的层越窄，
-            // 于是从中心往外依次露出更糊的层。
-            //
-            // 必须**明显小于**封面自身的半高（这里最宽只取到 0.46 倍），
-            // 剩下的才是渐变过渡的余量。早先按半高取值，过渡段被挤成 0，
-            // 方形封面的上下沿直接露出两道硬横边——正是这次要消灭的东西。
-            val reach = coverHeightRatio / 2f * (0.46f - 0.13f * i)
+        // 整套分层画一遍。低清→高清淡入时要画两遍（旧的垫在下面），
+        // 而两遍的排版完全相同——几何恒定，淡入期间不会有任何位移。
+        @Composable
+        fun stack(image: androidx.compose.ui.graphics.ImageBitmap, layerAlpha: Float) {
+            // 最糊的那一档打底，且**纵向放大到铺满全屏**——它只提供延伸的色块与
+            // 纹理，看不清细节，拉伸不影响观感，却能保证上下最远端不露出背景色。
             BlurLayer(
-                bitmap = bitmap,
-                blur = BLUR_STEPS[i],
-                scale = BLUR_SCALES[i],
-                // 歌词态下**除兜底层外全部淡出**，只剩最糊的那一层当氛围底。
-                //
-                // 不能只淡出第 0 档：中间那两档（6dp / 18dp）仍然保留着
-                // 可辨认的结构，实测歌词压在一张认得出五官的脸上，
-                // 背景在跟文字抢注意力。歌词态的口径是「只看到色彩氛围，
-                // 认不出封面细节」，那就得让这几档一起退场。
-                alpha = sharpness,
-                topRatio = coverTop,
-                heightRatio = coverHeightRatio,
-                fadeFrom = SHARP_CENTER - reach,
-                fadeTo = SHARP_CENTER + reach,
+                bitmap = image,
+                blur = BLUR_STEPS.last(),
+                scale = BLUR_SCALES.last(),
+                alpha = layerAlpha,
+                fillScreen = true,
             )
+
+            // 其余各档由糊到清依次叠上去，每层带一个「离清晰区越远越透明」的蒙版。
+            // 倒序是因为清晰的要压在模糊的上面。
+            for (i in BLUR_STEPS.lastIndex - 1 downTo 0) {
+                // 这一层「完全不透明」的竖向半径，越清晰的层越窄，
+                // 于是从中心往外依次露出更糊的层。
+                //
+                // 必须**明显小于**封面自身的半高（这里最宽只取到 0.46 倍），
+                // 剩下的才是渐变过渡的余量。早先按半高取值，过渡段被挤成 0，
+                // 方形封面的上下沿直接露出两道硬横边——正是这次要消灭的东西。
+                val reach = coverHeightRatio / 2f * (0.46f - 0.13f * i)
+                BlurLayer(
+                    bitmap = image,
+                    blur = BLUR_STEPS[i],
+                    scale = BLUR_SCALES[i],
+                    // 歌词态下**除兜底层外全部淡出**，只剩最糊的那一层当氛围底。
+                    //
+                    // 不能只淡出第 0 档：中间那两档（6dp / 18dp）仍然保留着
+                    // 可辨认的结构，实测歌词压在一张认得出五官的脸上，
+                    // 背景在跟文字抢注意力。歌词态的口径是「只看到色彩氛围，
+                    // 认不出封面细节」，那就得让这几档一起退场。
+                    alpha = sharpness * layerAlpha,
+                    topRatio = coverTop,
+                    heightRatio = coverHeightRatio,
+                    fadeFrom = SHARP_CENTER - reach,
+                    fadeTo = SHARP_CENTER + reach,
+                )
+            }
         }
+
+        // 淡入期间旧图垫底，不透明地画满——新图在它上面从透明淡到不透明。
+        // 不让旧图同时淡出：两张图都半透明的话，中间会短暂透出底色。
+        val under = underlay.value
+        // 起始 alpha 取 0 而不是 fade.value：effect 还没跑时 fade 仍是上一轮的 1f，
+        // 直接用它会让新图在第一帧就整张画出来，正是上面说的那个回跳。
+        val newAlpha = if (under != null && !fade.isRunning && fade.value == 1f) 0f
+                       else fade.value
+        if (under != null) stack(under, 1f)
+        stack(bitmap, newAlpha)
 
         // 压暗层。恒为黑色而不跟随主题：封面模式的底色完全由封面决定，
         // 跟着明暗主题走没有意义，而「暗底白字」是唯一不用做亮度分析
@@ -281,10 +377,15 @@ private fun BoxWithConstraintsScope.BlurLayer(
     Image(
         bitmap = bitmap,
         contentDescription = null,
-        // 方形图放进等宽等高的框里，FillBounds 与 Crop 等价，
-        // 但前者不依赖「源图恰好是正方形」这个假设：真出现非方封面时
-        // 宁可轻微拉伸，也好过把两侧裁掉。
-        contentScale = if (fillScreen) ContentScale.Crop else ContentScale.FillBounds,
+        // **恒用 Crop**：框的形状由目标比例定，图居中裁进去——
+        // 这就是我们自己做的那次居中裁，与网易云 `?param` 做的那次等价
+        // （实测逐像素相同，见 CoverAspect 的注释）。
+        //
+        // 早先用的是 FillBounds，理由是「真出现非方封面时宁可轻微拉伸，
+        // 也好过把两侧裁掉」。那条已经翻案：它的前提是「框等于图的形状」，
+        // 而现在框由 aspect 定死，FillBounds 会把方图**压成** 4:5，
+        // 那才是真的变形。况且原图本来就不一定是方的（实测 852×1136）。
+        contentScale = ContentScale.Crop,
         modifier = placement
             .graphicsLayer {
                 scaleX = scale

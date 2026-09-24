@@ -197,13 +197,15 @@ class MainActivity : ComponentActivity() {
             //
             // **仅封面模式才拉**：简洁模式只有 52dp 的小图，363 那张绰绰有余，
             // 为它跑一次网络往返加一次 6MB 的解码没有意义。
-            // coverAspect 也作为 key，实验室里换比例后立刻重拉。
+            //
+            // **比例不在 key 里**：请求恒为方图，比例是渲染侧的事。
+            // 早先 coverAspect 也是 key，于是实验室里每换一档都白重拉一次网络，
+            // 而换比例现在应当立即生效、零网络。
             val albumMode = config.displayMode == DisplayMode.ALBUM
-            val coverAspect = CoverOverride.current
             val screenWidthPx = resources.displayMetrics.widthPixels
-            LaunchedEffect(mediaId, albumMode, coverAspect) {
+            LaunchedEffect(mediaId, albumMode) {
                 if (mediaId.isNullOrBlank() || !albumMode) return@LaunchedEffect
-                val hiRes = ArtworkCache.load(mediaId, coverAspect, screenWidthPx)
+                val hiRes = ArtworkCache.load(mediaId, screenWidthPx)
                     ?: return@LaunchedEffect
                 // 拉完期间可能已经切歌，此时这张图是旧歌的，丢掉。
                 // effect 的取消不保证能在 track 被改之前生效，故再比一次。
