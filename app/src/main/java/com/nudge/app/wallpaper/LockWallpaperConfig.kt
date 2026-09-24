@@ -82,20 +82,20 @@ data class LockWallpaperConfig(
 }
 
 /**
- * 开启功能时原壁纸的状态。**恢复逻辑的正确性全靠它**。
+ * 开启功能时原锁屏壁纸的状态。**恢复逻辑的正确性全靠它**。
  *
- * 真机取证：测试机上 `dumpsys wallpaper` 的 `Lock Wallpaper` 一节是
- * `mWallpaperComponent=null`（静态图，可备份），但用户**没设过**独立
- * 锁屏壁纸时锁屏继承桌面壁纸，此时 `getWallpaperFile(FLAG_LOCK)` 返回 null。
+ * 只有两种，因为 **Android 13+ 读不到原壁纸的内容**（`getWallpaperFile`
+ * 需要 targetSdk 33 起已失效的 `READ_EXTERNAL_STORAGE`，Google 标记为
+ * Won't Fix，详见 `LockWallpaperWriter.detectOriginalKind` 的注释）。
+ * 所以没有「自动备份原图」这一档——能知道的只是「有没有设过」。
  *
- * 这两种情形的恢复动作**完全不同**，混为一谈会造成用户察觉不到的破坏。
+ * 判定用 `getWallpaperId(FLAG_LOCK)`，它不需要任何权限。
+ * **必须在第一次写入之前判定并持久化**：我们写过一次之后，
+ * 系统就认为「设过」了。
  */
 enum class OriginalWallpaperKind {
-    /** 设过独立锁屏壁纸，已备份成文件 → 恢复时写回。 */
-    BACKED_UP,
-
     /**
-     * 没设过独立锁屏壁纸，锁屏继承桌面 → 恢复时必须 `clear(FLAG_LOCK)`。
+     * 没设过独立锁屏壁纸，锁屏继承桌面 → 恢复时 `clear(FLAG_LOCK)` 即完美还原。
      *
      * **此时写任何图回去都是错的**：那会把「继承桌面」变成「固定一张图」，
      * 用户之后改桌面壁纸锁屏不再跟随，而他不会知道是 nudge 干的。
@@ -103,10 +103,10 @@ enum class OriginalWallpaperKind {
     INHERITED,
 
     /**
-     * 备份失败（部分 One UI 版本对第三方保护壁纸文件）→ 用用户指定的恢复图。
+     * 设过独立锁屏壁纸。内容读不到，只能请用户自己指定一张恢复图。
      *
-     * 拿不到备份又没有用户指定图时**不允许开启功能**——不能让用户在
-     * 不知情的情况下丢掉原壁纸。
+     * 没有指定时**不允许开启功能**——直接 clear 会把他原本那张锁屏壁纸
+     * 弄丢，而这是不可逆的。宁可不做也不能静默损坏。
      */
     USER_SUPPLIED,
 }

@@ -6,6 +6,13 @@
     <!-- 应用内升级：下载 APK 后拉起系统安装器 -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
+    <!-- 锁屏封面壁纸。SET_WALLPAPER 是 normal 权限（有用户可见文案、非
+         signature），装上即有，不需要运行时申请、更不需要 root。
+         真机核对：`pm list permissions -f` 里它带 label「设置壁纸」。 -->
+    <uses-permission android:name="android.permission.SET_WALLPAPER" />
+    <!-- 壁纸服务必须常驻后台（听歌时应用不在前台），只能是前台服务 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+
     <application
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
@@ -65,6 +72,24 @@
                 <action android:name="com.nudge.app.PROFILE" />
             </intent-filter>
         </receiver>
+
+        <!-- 锁屏壁纸的 adb 验证入口。这个功能的关键指标（写入耗时、恢复分支、
+             熄屏攒住）都没法单测，只能真机验证，而界面点按读不出耗时。 -->
+        <receiver
+            android:name=".wallpaper.LockWallpaperDebugReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.nudge.app.LOCKWP" />
+            </intent-filter>
+        </receiver>
+
+        <!-- 锁屏封面壁纸。前台服务而非普通后台服务：听歌时 nudge 不在前台，
+             One UI 对后台的限制会在几分钟内把普通服务杀掉。
+             不声明 foregroundServiceType——targetSdk 34 下只有 API 34+ 才强制要求，
+             而这个服务的用途（媒体相关的壁纸同步）不属于任何一个既有类型。 -->
+        <service
+            android:name=".wallpaper.LockWallpaperService"
+            android:exported="false" />
 
         <service
             android:name=".media.NudgeNotificationListener"

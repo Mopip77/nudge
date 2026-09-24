@@ -7,9 +7,12 @@ import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffXfermode
+import android.content.Context
 import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Shader
+import android.os.Build
+import android.view.WindowManager
 
 /**
  * 把封面**离屏**烘焙成一张全屏图，供写入锁屏壁纸。
@@ -34,6 +37,30 @@ import android.graphics.Shader
  * 依赖不划算。
  */
 object BackdropBaker {
+
+    /**
+     * 壁纸要铺满**整块屏幕**的尺寸。
+     *
+     * **不能用 `resources.displayMetrics`**：那是应用窗口的大小，扣掉了
+     * 状态栏与导航栏。真机实测 1080×2400 的屏上它只给 1080×**2277**，
+     * 少的 123px 会被系统拉伸补上，整张壁纸纵向变形。
+     *
+     * 也不取物理分辨率（`wm size` 的 Physical 1440×3200）：本机开了
+     * 分辨率缩放，实际渲染是 Override 的 1080×2400，按物理尺寸烘焙
+     * 要多花 1.7 倍内存又被缩回去。
+     *
+     * `maximumWindowMetrics` 给的正是「整块屏幕」（实测与
+     * `mMaxBounds=Rect(0,0-1080,2400)` 一致）。
+     */
+    fun screenSize(context: Context): Pair<Int, Int> {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val wm = context.getSystemService(WindowManager::class.java)
+            val b = wm.maximumWindowMetrics.bounds
+            if (b.width() > 0 && b.height() > 0) return b.width() to b.height()
+        }
+        val m = context.resources.displayMetrics
+        return m.widthPixels to m.heightPixels
+    }
 
     /**
      * 烘焙。**阻塞且吃内存，必须在 IO 线程调用。**

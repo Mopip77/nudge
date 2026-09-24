@@ -13,9 +13,6 @@ package com.nudge.app.wallpaper
 object RestorePlan {
 
     sealed interface Action {
-        /** 写回备份的原图。 */
-        data object WriteBackup : Action
-
         /**
          * `clear(FLAG_LOCK)` 回到「锁屏跟随桌面」。
          *
@@ -29,36 +26,33 @@ object RestorePlan {
     }
 
     /**
-     * @param kind 开启功能时记录的原壁纸形态
-     * @param backupAvailable 备份文件当前是否可用（可能被清理或损坏）
+     * @param kind 开启功能前探测到的原壁纸形态
      * @param userSuppliedAvailable 用户是否指定了恢复图
      */
-    fun decide(
-        kind: OriginalWallpaperKind,
-        backupAvailable: Boolean,
-        userSuppliedAvailable: Boolean,
-    ): Action = when (kind) {
-        OriginalWallpaperKind.BACKED_UP ->
-            // 备份没了就退到 clear：总好过把封面永久留在锁屏上。
-            if (backupAvailable) Action.WriteBackup else Action.ClearLock
+    fun decide(kind: OriginalWallpaperKind, userSuppliedAvailable: Boolean): Action =
+        when (kind) {
+            // 继承态 —— 恒为 clear，**与手上有没有图无关**。
+            // 这条不能因为「正好有张用户指定图」就改去写图：
+            // 用户原本的锁屏是跟随桌面的，写一张进去就把这个性质破坏了。
+            OriginalWallpaperKind.INHERITED -> Action.ClearLock
 
-        // 没设过独立锁屏壁纸 —— 恒为 clear，**与有没有备份无关**。
-        // 这条不能因为「手上正好有张备份图」就改去写图。
-        OriginalWallpaperKind.INHERITED -> Action.ClearLock
-
-        OriginalWallpaperKind.USER_SUPPLIED ->
-            if (userSuppliedAvailable) Action.WriteUserSupplied else Action.ClearLock
-    }
+            OriginalWallpaperKind.USER_SUPPLIED ->
+                // 没有恢复图时退到 clear。这**会**让用户丢掉原本那张独立
+                // 锁屏壁纸，所以 canEnable 在一开始就拦住了这种组合——
+                // 走到这里说明是开启之后恢复图又被删了，属于兜底。
+                if (userSuppliedAvailable) Action.WriteUserSupplied else Action.ClearLock
+        }
 
     /**
      * 是否允许开启功能。
      *
-     * 备份失败又没有用户指定图时**不允许开启**——不能让用户在不知情的
-     * 情况下丢掉原壁纸。这是个刻意的阻拦，不是校验的副产物。
+     * 设过独立锁屏壁纸、又没有用户指定的恢复图时**不允许开启**——
+     * Android 13+ 读不到原图，开了就再也回不去了。这是个刻意的阻拦，
+     * 不是校验的副产物：宁可不做，也不能静默损坏用户的东西。
      */
     fun canEnable(kind: OriginalWallpaperKind, userSuppliedAvailable: Boolean): Boolean =
         when (kind) {
-            OriginalWallpaperKind.BACKED_UP, OriginalWallpaperKind.INHERITED -> true
+            OriginalWallpaperKind.INHERITED -> true
             OriginalWallpaperKind.USER_SUPPLIED -> userSuppliedAvailable
         }
 }
