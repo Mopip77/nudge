@@ -50,16 +50,20 @@ class LockWallpaperWriter(private val context: Context) {
      * 代价是它只告诉我们「有没有」，**给不了图**。所以「设过独立锁屏壁纸」
      * 的用户只能请他自己指定一张恢复图。
      *
-     * ## 三星上这个判定偏保守，是刻意接受的
+     * ## 判定的精度**随系统版本而变**，但两边都是安全的
      *
-     * 真机实测（One UI 5.1）：`clear(FLAG_LOCK)` **不会**删掉 lock 条目，
-     * `dumpsys wallpaper` 里 `Lock Wallpaper / User 0: id=16` 依然在，
-     * 于是 `getWallpaperId(FLAG_LOCK)` 恒 > 0。也就是说在三星上这个判定
-     * 很可能恒为 [OriginalWallpaperKind.USER_SUPPLIED]。
+     * 早先在 One UI 5.1 上实测：`clear(FLAG_LOCK)` **不删** lock 条目
+     * （`dumpsys wallpaper` 里 `id=16` 依然在），于是 `getWallpaperId` 恒 > 0，
+     * 这个判定很可能恒为 [OriginalWallpaperKind.USER_SUPPLIED]。
      *
-     * **这是可接受的**，因为它偏向安全的那一侧：最坏的后果是要求用户
-     * 多指定一张恢复图（一次性的麻烦），而反过来误判成「继承」会直接
-     * clear 掉他真实存在的锁屏壁纸，且不可逆。
+     * **但在 One UI 8 / Android 16（S24 Ultra）上已经不是这样**：`clear`
+     * 之后 `id` 真的变成 **-1**、`mCropHint` 清零，条目被彻底删掉。
+     * 也就是说新系统上这个判定**能真正区分**两档，继承态的用户不必再
+     * 指定恢复图。
+     *
+     * 两种行为都不影响正确性，因为误差只会偏向保守的那一侧：
+     * 旧系统上最坏是要求用户多指定一张恢复图（一次性的麻烦），
+     * 而反过来误判成「继承」会直接 clear 掉他真实存在的锁屏壁纸，且不可逆。
      * 与「收藏必须先读后写」同一个口径：**拿不准就别动用户的数据**。
      */
     fun detectOriginalKind(): OriginalWallpaperKind {

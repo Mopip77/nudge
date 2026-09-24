@@ -20,3 +20,7 @@ captures/
 
 # 本机专属的 Claude 指令：记录开发机环境（设备序列号等），是 public repo，不能提交
 CLAUDE.local.md
+.claude/
+
+# 会话间的交接笔记，属于工作过程而非产物。沉淀下来的结论应当写进 CLAUDE.md
+HANDOVER.md
