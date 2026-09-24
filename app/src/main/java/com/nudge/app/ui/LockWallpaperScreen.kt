@@ -1,6 +1,9 @@
 package com.nudge.app.ui
 
 import android.graphics.Bitmap
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -293,8 +296,8 @@ fun LockWallpaperScreen(track: TrackInfo?, onBack: () -> Unit) {
             value = c.renderScale,
             range = LockWallpaperConfig.RENDER_SCALE_RANGE,
             display = "%.0f%%".format(c.renderScale * 100),
-            hint = "调低能明显加快写入（实测 100%% 约 1.5 秒，70%% 约 0.8 秒），" +
-                "代价是清晰度",
+            // hint 是普通字符串不走 format，百分号不能转义——写成 %% 会原样显示
+            hint = "调低能明显加快写入（实测 100% 约 1.5 秒，70% 约 0.8 秒），代价是清晰度",
             onChange = { cfg = c.copy(renderScale = it) },
             onCommit = { store.saveBlocking(cfg ?: c) },
         )
@@ -311,6 +314,37 @@ fun LockWallpaperScreen(track: TrackInfo?, onBack: () -> Unit) {
             color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
             modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp),
         )
+
+        // Photo Picker：Android 13+ 的系统相册选择器，**不需要任何存储权限**
+        // （用户选哪张就授哪张的临时读权限）。这正好绕开了「读不到原壁纸」
+        // 那条限制——我们读不了壁纸，但用户可以把同一张图交给我们。
+        val picker = rememberLauncherForActivityResult(
+            ActivityResultContracts.PickVisualMedia(),
+        ) { uri ->
+            if (uri != null) {
+                runCatching {
+                    context.contentResolver.openInputStream(uri).use { input ->
+                        android.graphics.BitmapFactory.decodeStream(input)
+                    }
+                }.getOrNull()?.let {
+                    // 存副本而不是记 Uri：用户选的那张之后可能被删或权限被回收，
+                    // 而恢复要等到「关掉功能」时才发生，中间可能隔几个月。
+                    store.saveUserSupplied(it)
+                    hasRestoreImage = true
+                }
+            }
+        }
+
+        TextButton(
+            onClick = {
+                picker.launch(
+                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+                )
+            },
+            modifier = Modifier.padding(horizontal = 16.dp),
+        ) {
+            Text(if (hasRestoreImage) "重新选择" else "选择一张图片")
+        }
 
         Spacer(Modifier.height(32.dp))
     }
