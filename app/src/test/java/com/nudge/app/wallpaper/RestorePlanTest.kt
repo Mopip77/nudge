@@ -88,6 +88,46 @@ class RestorePlanTest {
         assertTrue(RestorePlan.canEnable(OriginalWallpaperKind.INHERITED, true))
     }
 
+    // ---- 归属检查：真机上覆盖过用户刚设好的壁纸 ----
+
+    @Test
+    fun `当前壁纸不是我们写的，什么都不能做`() {
+        // 真机事故：残留的「恢复图」在关闭功能时把用户刚设好的壁纸盖掉了，
+        // 而他完全不知道是 nudge 干的（表现为「装了新版还是没恢复」）。
+        // 用户自己换过壁纸之后，我们手上那份「原壁纸」记录就过期了。
+        OriginalWallpaperKind.entries.forEach { kind ->
+            listOf(true, false).forEach { user ->
+                assertEquals(
+                    "kind=$kind user=$user：壁纸不归我们时不该动它",
+                    Action.DoNothing,
+                    RestorePlan.decide(kind, user, weOwnCurrentWallpaper = false),
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `归属检查优先于所有 kind 分支`() {
+        // 继承态平时是 clear，但壁纸不归我们时连 clear 都不能做——
+        // clear 同样会改掉用户当前的锁屏壁纸。
+        assertEquals(
+            Action.DoNothing,
+            RestorePlan.decide(OriginalWallpaperKind.INHERITED, false, false),
+        )
+    }
+
+    @Test
+    fun `壁纸归我们时，各分支照常工作`() {
+        assertEquals(
+            Action.ClearLock,
+            RestorePlan.decide(OriginalWallpaperKind.INHERITED, false, true),
+        )
+        assertEquals(
+            Action.WriteUserSupplied,
+            RestorePlan.decide(OriginalWallpaperKind.USER_SUPPLIED, true, true),
+        )
+    }
+
     // ---- 动态壁纸：真的损坏过用户数据的那条 ----
 
     @Test

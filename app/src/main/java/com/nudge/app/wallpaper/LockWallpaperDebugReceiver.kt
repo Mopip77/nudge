@@ -54,13 +54,19 @@ class LockWallpaperDebugReceiver : BroadcastReceiver() {
                     store.save(currentConfig(store).copy(enabled = false))
                     LockWallpaperService.stop(context)
                     val kind = store.originalKind()
-                    val ok = writer.restore(kind, store.userSuppliedBitmap())
+                    // adb 入口是人工触发的，没有服务里那份 id 记录。
+                    // 传当前 id 表示「我确认就是要还原」，绕开归属检查。
+                    val ok = writer.restore(
+                        kind, store.userSuppliedBitmap(), writer.currentLockWallpaperId(),
+                    )
                     Log.i(TAG, "关闭并恢复 kind=$kind 成功=$ok")
                 }
 
                 "restore" -> {
                     val kind = store.originalKind()
-                    val ok = writer.restore(kind, store.userSuppliedBitmap())
+                    val ok = writer.restore(
+                        kind, store.userSuppliedBitmap(), writer.currentLockWallpaperId(),
+                    )
                     Log.i(TAG, "恢复 kind=$kind 成功=$ok")
                 }
 

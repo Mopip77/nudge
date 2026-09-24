@@ -114,7 +114,16 @@ fun LockWallpaperScreen(track: TrackInfo?, onBack: () -> Unit) {
         hasRestoreImage = store.userSuppliedFile.exists()
         // 探测只在**还没开启**时做：开启之后系统里那张就是我们写的，
         // 再探测只会拿到被自己污染的结果。已开启时读持久化的那个。
-        originalKind = if (cfg?.enabled == true) store.originalKind() else writer.detectOriginalKind()
+        //
+        // **未开启时要重新探测并写回**，不能只读旧值：用户可能在两次进来
+        // 之间自己换过壁纸（换成了动态壁纸、或从继承态变成了独立壁纸），
+        // 而那份记录是功能上次开启时写下的，早就过期了。真机上正是这种
+        // 过期状态导致「关闭功能反而把用户刚设好的壁纸盖掉」。
+        originalKind = if (cfg?.enabled == true) {
+            store.originalKind()
+        } else {
+            writer.detectOriginalKind().also { store.saveOriginalKind(it) }
+        }
     }
 
     // 取一张封面用于预览。没有正在播放的歌就没得预览——

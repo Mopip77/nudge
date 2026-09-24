@@ -65,6 +65,15 @@ class LockWallpaperService : Service() {
     @Volatile
     private var pausedSinceMs: Long? = null
 
+    /**
+     * 我们最后一次写入后，系统给出的锁屏壁纸 id。
+     *
+     * 恢复前要拿它和当前 id 比对：**对不上说明用户自己换过壁纸**，
+     * 此时写回「恢复图」会把他刚设好的盖掉——真机上出过这个事故。
+     */
+    @Volatile
+    private var ourWallpaperId: Int? = null
+
     private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
@@ -170,7 +179,12 @@ class LockWallpaperService : Service() {
         val ms = writer.write(baked)
         // 里程碑 1 的观测点：真机上这条日志给出单次写入的真实耗时。
         Log.i(TAG, "写入锁屏壁纸 mediaId=$mediaId hiRes=${hiRes != null} 耗时=${ms}ms")
-        if (ms != null) coverShowing = true
+        if (ms != null) {
+            coverShowing = true
+            // 记下这次写入产生的壁纸 id。恢复前要比对——对不上就说明
+            // 用户在这期间自己换过壁纸，那时绝不能再写回我们那张旧图。
+            ourWallpaperId = writer.currentLockWallpaperId()
+        }
 
         // 烘焙产物用完即弃：全屏 ARGB_8888 一张 10MB 量级，攒着必 OOM。
         // 与 ArtworkCache 里那张源图不同——那张还要给主界面用。
@@ -184,8 +198,9 @@ class LockWallpaperService : Service() {
         if (System.currentTimeMillis() - since < cfg.restoreDelaySec * 1000L) return
 
         val kind = store.originalKind()
-        if (writer.restore(kind, store.userSuppliedBitmap())) {
+        if (writer.restore(kind, store.userSuppliedBitmap(), ourWallpaperId)) {
             coverShowing = false
+            ourWallpaperId = null
             // 必须清掉「上次写的是谁」：壁纸已经不是那张图了，
             // 同一首歌恢复播放时要能重新写回去。
             policy.onRestored()
@@ -199,7 +214,9 @@ class LockWallpaperService : Service() {
         // 服务停止时把壁纸还回去——否则封面会永久留在锁屏上。
         // 这是用户最容易骂人的地方：关掉功能/杀掉应用之后壁纸不该还是封面。
         if (coverShowing) {
-            runCatching { writer.restore(store.originalKind(), store.userSuppliedBitmap()) }
+            runCatching {
+                writer.restore(store.originalKind(), store.userSuppliedBitmap(), ourWallpaperId)
+            }
         }
         scope.cancel()
         super.onDestroy()

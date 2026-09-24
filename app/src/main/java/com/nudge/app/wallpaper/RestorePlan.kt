@@ -14,6 +14,15 @@ object RestorePlan {
 
     sealed interface Action {
         /**
+         * 什么都别做。
+         *
+         * 当前锁屏壁纸**不是我们写的那张**——用户在这期间自己换过。
+         * 此时写回「恢复图」会把他刚设好的壁纸盖掉，而他根本不知道是
+         * nudge 干的。真机上出过这个事故。
+         */
+        data object DoNothing : Action
+
+        /**
          * `clear(FLAG_LOCK)` 回到「锁屏跟随桌面」。
          *
          * 用户原本没设独立锁屏壁纸时**只能**这样。写任何图回去都会把
@@ -28,9 +37,20 @@ object RestorePlan {
     /**
      * @param kind 开启功能前探测到的原壁纸形态
      * @param userSuppliedAvailable 用户是否指定了恢复图
+     * @param weOwnCurrentWallpaper 当前锁屏壁纸是不是我们写的那张
+     *   （比对 `getWallpaperId`，见 `LockWallpaperWriter.currentLockWallpaperId`）
      */
-    fun decide(kind: OriginalWallpaperKind, userSuppliedAvailable: Boolean): Action =
-        when (kind) {
+    fun decide(
+        kind: OriginalWallpaperKind,
+        userSuppliedAvailable: Boolean,
+        weOwnCurrentWallpaper: Boolean = true,
+    ): Action {
+        // **这道检查必须排在最前面，优先于所有 kind 分支。**
+        // 用户自己换过壁纸的话，我们手上那张「原壁纸」的记录早就过期了，
+        // 无论它属于哪一档，写回去都是在破坏他当前的选择。
+        if (!weOwnCurrentWallpaper) return Action.DoNothing
+
+        return when (kind) {
             // 继承态 —— 恒为 clear，**与手上有没有图无关**。
             // 这条不能因为「正好有张用户指定图」就改去写图：
             // 用户原本的锁屏是跟随桌面的，写一张进去就把这个性质破坏了。
@@ -47,6 +67,7 @@ object RestorePlan {
             // 能做的——动态壁纸我们本来就恢复不了，至少别留着封面。
             OriginalWallpaperKind.LIVE_WALLPAPER -> Action.ClearLock
         }
+    }
 
     /**
      * 是否允许开启功能。

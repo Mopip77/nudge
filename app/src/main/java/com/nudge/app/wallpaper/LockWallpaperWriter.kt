@@ -114,16 +114,50 @@ class LockWallpaperWriter(private val context: Context) {
     }
 
     /**
+     * 当前锁屏壁纸的 id。**「这张还是不是我们写的」全靠它判断。**
+     *
+     * 每次 `setBitmap` 成功后系统都会给出一个新的递增 id；用户自己去
+     * 设置里换一张，id 同样会变。所以把写入后的 id 记下来，恢复前比一次，
+     * 对不上就说明**用户在这期间自己换过壁纸**——此时绝不能再写回
+     * 我们那张旧的「恢复图」。
+     *
+     * 这正是真机上出过的事故：残留的恢复图把用户刚设好的壁纸盖掉了，
+     * 而他完全不知道是 nudge 干的（表现为「装了新版还是没恢复」）。
+     */
+    fun currentLockWallpaperId(): Int = runCatching {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            wm.getWallpaperId(WallpaperManager.FLAG_LOCK)
+        } else {
+            -1
+        }
+    }.getOrDefault(-1)
+
+    /**
      * 恢复原壁纸。**三种情形的动作完全不同，不能合并。**
      *
      * @param userSupplied [OriginalWallpaperKind.USER_SUPPLIED] 时用户指定的恢复图
      */
-    fun restore(kind: OriginalWallpaperKind, userSupplied: Bitmap? = null): Boolean =
+    /**
+     * @param ourWallpaperId 我们最后一次写入后记下的壁纸 id。
+     *   与当前 id 不符即说明**用户自己换过壁纸**，此时什么都不该做。
+     *   传 null 表示「没写过」，同样不该恢复。
+     */
+    fun restore(
+        kind: OriginalWallpaperKind,
+        userSupplied: Bitmap? = null,
+        ourWallpaperId: Int? = null,
+    ): Boolean =
         runCatching {
+            val weOwnIt = ourWallpaperId != null && ourWallpaperId == currentLockWallpaperId()
             // 分支判断交给 RestorePlan（纯函数、有穷举测试兜底），
             // 这里只负责执行。两处各写一份 when 的话，改了一处忘了另一处
             // 就会出现「测试全绿但真机上把继承态写成了固定图」。
-            when (RestorePlan.decide(kind, userSupplied != null)) {
+            when (RestorePlan.decide(kind, userSupplied != null, weOwnIt)) {
+                RestorePlan.Action.DoNothing -> {
+                    // 不是我们写的那张——用户自己换过壁纸了，别碰。
+                    Log.i(TAG, "当前壁纸非本应用所写（记录=$ourWallpaperId 实际=${currentLockWallpaperId()}），跳过恢复")
+                    true
+                }
                 RestorePlan.Action.ClearLock -> clearLock()
                 RestorePlan.Action.WriteUserSupplied ->
                     userSupplied?.let { write(it) != null } ?: clearLock()
