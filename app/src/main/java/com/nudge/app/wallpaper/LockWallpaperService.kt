@@ -8,6 +8,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.os.Build
 import android.os.IBinder
@@ -83,7 +84,7 @@ class LockWallpaperService : Service() {
         writer = LockWallpaperWriter(this)
         store = LockWallpaperStore(this)
 
-        startForeground(NOTIF_ID, buildNotification())
+        startForegroundCompat()
 
         // ACTION_SCREEN_ON/OFF **必须动态注册**——Android 8 起不接受静态声明。
         registerReceiver(
@@ -207,6 +208,27 @@ class LockWallpaperService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
+
+    /**
+     * 进前台。**Android 14 起必须带 type**，否则抛
+     * `MissingForegroundServiceTypeException` 直接崩。
+     *
+     * 这个坑在 Android 13 上完全测不出来——13 允许不带 type 的前台服务，
+     * 我据此错误地得出「targetSdk 34 下不需要声明」的结论，
+     * 结果在 One UI 8.5 / Android 16 的真机上一启用就闪退。
+     * **要验证前台服务，必须在 A14+ 的机器上验。**
+     *
+     * 类型取 `specialUse`：我们不播放任何东西（`mediaPlayback` 不成立），
+     * 也不传输数据（`dataSync` 不成立），只是跟着别人的播放状态改壁纸。
+     */
+    private fun startForegroundCompat() {
+        val n = buildNotification()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(NOTIF_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+        } else {
+            startForeground(NOTIF_ID, n)
+        }
+    }
 
     private fun buildNotification(): Notification {
         // 字符串直接写在代码里——本项目没有 strings.xml，全是内联中文。

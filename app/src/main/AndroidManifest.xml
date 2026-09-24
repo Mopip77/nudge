@@ -12,6 +12,10 @@
     <uses-permission android:name="android.permission.SET_WALLPAPER" />
     <!-- 壁纸服务必须常驻后台（听歌时应用不在前台），只能是前台服务 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- Android 14+ 起前台服务必须声明类型，且类型对应的权限要单独申请。
+         少了它在 A14+ 上是**启动即崩**（MissingForegroundServiceTypeException），
+         而 A13 上完全正常——见 LockWallpaperService 的注释。 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
     <application
         android:allowBackup="true"
@@ -85,11 +89,19 @@
 
         <!-- 锁屏封面壁纸。前台服务而非普通后台服务：听歌时 nudge 不在前台，
              One UI 对后台的限制会在几分钟内把普通服务杀掉。
-             不声明 foregroundServiceType——targetSdk 34 下只有 API 34+ 才强制要求，
-             而这个服务的用途（媒体相关的壁纸同步）不属于任何一个既有类型。 -->
+
+             **必须声明 foregroundServiceType**：Android 14 起不声明就是
+             启动即崩。取 specialUse 而不是 mediaPlayback（我们不播放任何
+             东西，只是跟着别人的播放状态改壁纸）也不是 dataSync
+             （不传输数据）——谎报类型会在上架审核和系统行为上都出问题。 -->
         <service
             android:name=".wallpaper.LockWallpaperService"
-            android:exported="false" />
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="跟随播放中的曲目更新锁屏壁纸" />
+        </service>
 
         <service
             android:name=".media.NudgeNotificationListener"
