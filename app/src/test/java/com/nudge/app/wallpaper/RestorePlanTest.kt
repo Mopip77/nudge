@@ -88,6 +88,21 @@ class RestorePlanTest {
         assertTrue(RestorePlan.canEnable(OriginalWallpaperKind.INHERITED, true))
     }
 
+    // ---- 动态壁纸：真的损坏过用户数据的那条 ----
+
+    @Test
+    fun `锁屏是动态壁纸时，无论如何都不允许开启`() {
+        // 设置 live wallpaper 需要 signature 级的 SET_WALLPAPER_COMPONENT，
+        // 我们没有；静态的「恢复图」也替不回动态壁纸。这一档**根本没有
+        // 恢复手段**，唯一负责任的做法是不让开。
+        // 开发中在 S24 上真的这么弄丢过一次用户的锁屏动态壁纸。
+        assertFalse(RestorePlan.canEnable(OriginalWallpaperKind.LIVE_WALLPAPER, false))
+        assertFalse(
+            "有恢复图也不行——静态图替不回动态壁纸",
+            RestorePlan.canEnable(OriginalWallpaperKind.LIVE_WALLPAPER, true),
+        )
+    }
+
     @Test
     fun `允许开启的情形，恢复时一定不会无所适从`() {
         // 把 canEnable 与 decide 串起来：只要放行了开启，
@@ -100,6 +115,8 @@ class RestorePlanTest {
                     val ok = when (kind) {
                         OriginalWallpaperKind.INHERITED -> action == Action.ClearLock
                         OriginalWallpaperKind.USER_SUPPLIED -> action == Action.WriteUserSupplied
+                        // 这一档不该被放行，走到这里本身就是错的
+                        OriginalWallpaperKind.LIVE_WALLPAPER -> false
                     }
                     assertTrue("kind=$kind user=$user 的恢复动作不对: $action", ok)
                 }

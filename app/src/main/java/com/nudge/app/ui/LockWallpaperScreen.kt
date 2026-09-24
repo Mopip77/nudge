@@ -176,6 +176,11 @@ fun LockWallpaperScreen(track: TrackInfo?, onBack: () -> Unit) {
         SwitchRow(
             label = "启用",
             hint = when {
+                // 动态壁纸单独说，且**不能**引导用户去选恢复图——
+                // 选了也没用，静态图替不回动态壁纸。
+                originalKind == OriginalWallpaperKind.LIVE_WALLPAPER ->
+                    "你的锁屏用的是动态壁纸，而应用无权重新设置动态壁纸，" +
+                        "开启后将无法还原。请先到「设置 → 壁纸」把锁屏换成普通图片再来。"
                 !canEnable ->
                     "你设过独立的锁屏壁纸，而系统不允许应用读取它（Android 13 起）。" +
                         "请先在下方指定一张「恢复用壁纸」，否则关闭功能后回不到原样。"

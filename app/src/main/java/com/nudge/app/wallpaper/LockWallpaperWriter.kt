@@ -68,6 +68,14 @@ class LockWallpaperWriter(private val context: Context) {
             return OriginalWallpaperKind.INHERITED
         }
         return runCatching {
+            // **动态壁纸要最先查**：它是唯一「开了就绝对回不去」的情形，
+            // 而 getWallpaperId 对它同样返回正数，只看 id 会把它误判成
+            // 「设过静态图」，于是以为给张恢复图就能救——救不了。
+            //
+            // getWallpaperInfo(FLAG_LOCK) 只在锁屏是 live wallpaper 时
+            // 返回非 null，静态图恒为 null，正好是我们要的判据。
+            if (lockIsLiveWallpaper()) return OriginalWallpaperKind.LIVE_WALLPAPER
+
             if (wm.getWallpaperId(WallpaperManager.FLAG_LOCK) > 0) {
                 // 设过独立锁屏壁纸。读不到它的内容，只能请用户指定恢复图——
                 // 直接 clear 会把他原本那张锁屏壁纸弄丢。
@@ -124,6 +132,22 @@ class LockWallpaperWriter(private val context: Context) {
             Log.w(TAG, "恢复锁屏壁纸失败", it)
             false
         }
+
+    /**
+     * 锁屏用的是不是动态壁纸。
+     *
+     * `getWallpaperInfo` 只在对应位置是 live wallpaper 时返回非 null。
+     * 带 `which` 参数的重载是 API 34 才有的；更低版本只能查桌面那个，
+     * 查不到就按「不是」处理——低版本上锁屏用独立 live wallpaper 的
+     * 情形本来就少，且那时的机器多数也没有这个能力。
+     */
+    private fun lockIsLiveWallpaper(): Boolean = runCatching {
+        if (Build.VERSION.SDK_INT >= 34) {
+            wm.getWallpaperInfo(WallpaperManager.FLAG_LOCK) != null
+        } else {
+            false
+        }
+    }.getOrDefault(false)
 
     /** 清掉独立锁屏壁纸，回到「跟随桌面」。 */
     private fun clearLock(): Boolean = runCatching {

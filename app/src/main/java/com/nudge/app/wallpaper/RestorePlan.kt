@@ -41,6 +41,11 @@ object RestorePlan {
                 // 锁屏壁纸，所以 canEnable 在一开始就拦住了这种组合——
                 // 走到这里说明是开启之后恢复图又被删了，属于兜底。
                 if (userSuppliedAvailable) Action.WriteUserSupplied else Action.ClearLock
+
+            // 动态壁纸：canEnable 恒为 false，正常流程根本走不到这里。
+            // 真走到了说明是历史遗留状态（早先版本开过），clear 是唯一
+            // 能做的——动态壁纸我们本来就恢复不了，至少别留着封面。
+            OriginalWallpaperKind.LIVE_WALLPAPER -> Action.ClearLock
         }
 
     /**
@@ -54,5 +59,10 @@ object RestorePlan {
         when (kind) {
             OriginalWallpaperKind.INHERITED -> true
             OriginalWallpaperKind.USER_SUPPLIED -> userSuppliedAvailable
+            // 动态壁纸**无论如何都不给开**：设置 live wallpaper 需要
+            // signature 级的 SET_WALLPAPER_COMPONENT，我们没有，
+            // 静态的「恢复图」也替不回动态壁纸——这一档根本没有恢复手段。
+            // 开发中真的这么弄丢过一次用户的锁屏动态壁纸。
+            OriginalWallpaperKind.LIVE_WALLPAPER -> false
         }
 }
