@@ -73,6 +73,26 @@ private const val POST_ACTION_REFRESH_DELAY_MS = 250L
  */
 private const val DOUBLE_BACK_WINDOW_MS = 2000L
 
+/**
+ * 把 [previous] 里已经拉到的高清封面接到这个新读出来的曲目上（同一首歌才接）。
+ *
+ * **每一处用 `repository.currentTrack()` 的结果覆写 `track` 的地方都必须走这里。**
+ * 那个方法读的是 MediaSession，只认识 363 的那张，`hiResArtwork` 恒为 null；
+ * 直接赋值就会把异步拉到的高清图抹掉。
+ *
+ * 抹掉之后**不会自愈**：轮询那段同样按「同一首歌就保留」的口径接力，
+ * 于是接力的是 null，而拉取 effect 的 key 是 mediaId、不会重跑——
+ * 表现为封面退回低清并一直停在那里，直到切歌。
+ *
+ * 这个 bug 最早就是这么漏出来的：轮询那处做了保留，手势后刷新那处忘了，
+ * 于是「按一下暂停，封面就糊了」。抽成函数而不是复制第二遍判断，
+ * 就是为了让「又多一个刷新点」时不必重新想一遍这件事。
+ */
+private fun TrackInfo?.keepHiResFrom(previous: TrackInfo?): TrackInfo? =
+    this?.copy(
+        hiResArtwork = previous?.takeIf { it.mediaId == mediaId }?.hiResArtwork
+    )
+
 class MainActivity : ComponentActivity() {
 
     private lateinit var repository: MediaControlRepository
@@ -137,14 +157,7 @@ class MainActivity : ComponentActivity() {
                     }
                     val current = withContext(Dispatchers.IO) { repository.currentTrack() }
                     hasPermission = permission
-                    // 高清封面要跨轮询保留：它由下面那个 LaunchedEffect 异步拉，
-                    // 而这里每秒重建一次 TrackInfo，直接赋值会把它每秒抹掉一次，
-                    // 表现为封面在高清与 363 之间反复闪。只在同一首歌里保留。
-                    track = current?.copy(
-                        hiResArtwork = track
-                            ?.takeIf { it.mediaId == current.mediaId }
-                            ?.hiResArtwork
-                    )
+                    track = current.keepHiResFrom(track)
                     delay(1000)
                 }
             }
@@ -390,7 +403,9 @@ class MainActivity : ComponentActivity() {
                                     // 立即读会拿到操作前的旧值，反而把正确的显示覆盖掉。
                                     delay(POST_ACTION_REFRESH_DELAY_MS)
                                     val refreshed = repository.currentTrack()
-                                    withContext(Dispatchers.Main) { track = refreshed }
+                                    withContext(Dispatchers.Main) {
+                                        track = refreshed.keepHiResFrom(track)
+                                    }
                                 }
                             },
                             onOpenSettings = { showSettings = true },
