@@ -32,6 +32,7 @@ import com.nudge.app.media.ArtworkCache
 import com.nudge.app.media.MediaControlRepository
 import com.nudge.app.media.TrackInfo
 import com.nudge.app.ui.CoverLabScreen
+import com.nudge.app.ui.LockWallpaperScreen
 import com.nudge.app.ui.CoverOverride
 import com.nudge.app.ui.HapticLabScreen
 import com.nudge.app.ui.LyricsLabScreen
@@ -136,6 +137,7 @@ class MainActivity : ComponentActivity() {
             var showLyricsLab by remember { mutableStateOf(false) }
             var showHapticLab by remember { mutableStateOf(false) }
             var showCoverLab by remember { mutableStateOf(false) }
+            var showLockWallpaper by remember { mutableStateOf(false) }
             // 手势绑定二级页。用可空的 ActionType 而非布尔量：这一页必须知道
             // 是在给哪个动作配手势，null 即「不在这一页」。
             var bindingAction by remember { mutableStateOf<ActionType?>(null) }
@@ -228,6 +230,12 @@ class MainActivity : ComponentActivity() {
                         CoverLabScreen(
                             track = track,
                             onBack = { showCoverLab = false },
+                        )
+                    } else if (showLockWallpaper) {
+                        BackHandler { showLockWallpaper = false }
+                        LockWallpaperScreen(
+                            track = track,
+                            onBack = { showLockWallpaper = false },
                         )
                     } else if (editingAction != null) {
                         // 与实验室同理：这是设置页的下一层，返回要退回设置页。
@@ -351,6 +359,7 @@ class MainActivity : ComponentActivity() {
                             onOpenLyricsLab = { showLyricsLab = true },
                             onOpenHapticLab = { showHapticLab = true },
                             onOpenCoverLab = { showCoverLab = true },
+                            onOpenLockWallpaper = { showLockWallpaper = true },
                             onBack = { showSettings = false },
                         )
                     } else {

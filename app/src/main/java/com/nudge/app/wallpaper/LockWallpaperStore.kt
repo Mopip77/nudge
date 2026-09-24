@@ -77,6 +77,21 @@ class LockWallpaperStore(private val context: Context) {
         context.lockWallpaperStore.edit { it[ORIGINAL_KIND] = kind.name }
     }
 
+    /** 当前配置的一次性快照，供非响应式的调用方（设置页初始化、广播入口）用。 */
+    suspend fun currentConfig(): LockWallpaperConfig = config.first()
+
+    /**
+     * 设置页用的同步写入。
+     *
+     * 设置页的回调不是 suspend（`Switch.onCheckedChange` / `Slider` 的
+     * `onValueChangeFinished` 都是普通 lambda），而这里写的量很小、
+     * 只在用户松手时发生，`runBlocking` 一次是毫秒级。
+     */
+    fun saveBlocking(cfg: LockWallpaperConfig) = runBlocking { save(cfg) }
+
+    fun saveOriginalKindBlocking(kind: OriginalWallpaperKind) =
+        runBlocking { saveOriginalKind(kind) }
+
     /**
      * 同步读取原壁纸形态。服务里用，`runBlocking` 的理由同
      * `ProfileCommandReceiver`：恢复要在 `onDestroy` 里同步完成，

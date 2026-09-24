@@ -71,6 +71,7 @@ fun SettingsScreen(
     onOpenLyricsLab: () -> Unit,
     onOpenHapticLab: () -> Unit,
     onOpenCoverLab: () -> Unit,
+    onOpenLockWallpaper: () -> Unit,
     onBack: () -> Unit,
 ) {
     Column(
@@ -226,6 +227,15 @@ fun SettingsScreen(
                 onClick = { onDisplayModeChange(mode) },
             )
         }
+
+        // 锁屏壁纸也挂在「显示模式」下：它同样是「封面怎么显示」，
+        // 只不过显示的地方是锁屏而不是应用内。不是实验室，
+        // 所以用 NavRow（面向用户的正式功能）而非 LabRow。
+        NavRow(
+            label = "锁屏封面壁纸",
+            hint = "把正在播放的专辑封面设为锁屏壁纸，暂停后自动还原",
+            onClick = onOpenLockWallpaper,
+        )
 
         // 封面实验室挂在「显示模式」下：它调的是封面模式下封面的裁切比例，
         // 与另两个实验室并列但归属不同的分组。
