@@ -35,6 +35,12 @@ MediaControlRepository ──► NotificationListenerService → MediaSessionMan
 ArtworkCache ──► ArtworkFetcher ──► 网易云 song/detail (高清封面, 绕开 MediaSession)
                       ▲── CoverAspect (裁切比例) ◄── CoverOverride ◄── CoverLabScreen (debug)
 
+LockWallpaperService ──► BackdropBaker ──► WallpaperManager.setBitmap(FLAG_LOCK)
+        │                     ▲── BackdropGeometry (与 AlbumBackdrop 共用几何)
+        ├── WritePolicy   (去抖 / 熄屏攒住 / 同图不写)
+        ├── RestorePlan   (恢复的两个分支)
+        └── LockWallpaperStore ◄── LockWallpaperScreen (设置页, 带实时预览)
+
 UpdateChecker ──► GitHub API /releases/latest
 ApkDownloader ──► UpdateInstaller → FileProvider → 系统安装器
 ```
@@ -1004,6 +1010,102 @@ scale 必须排在 blur 之前），统一字号后这些全部不需要了。
 不用剪贴板是因为真机调参时手边未必有键盘，且剪贴板在分屏／后台限制下
 时灵时不灵。
 
+## 锁屏封面壁纸
+
+把正在播放的封面烘焙成全屏图写进**锁屏壁纸**（`wallpaper/` 包，
+设置页「显示模式」→「锁屏封面壁纸」）。
+
+### 先认清天花板：无 root 动不了锁屏的布局
+
+真机取证的三条，别再去试：
+
+1. 锁屏由 SystemUI 的 `NotificationShade` 绘制，`mBaseLayer=171000`；
+   第三方最高只能拿到 `TYPE_APPLICATION_OVERLAY` 的 **21000**。
+   悬浮窗不是「被挡住」，是根本画在锁屏底下。
+2. 三星的锁屏媒体卡片是 `FaceWidgetMusicPage`（`AODService_v80.apk`），
+   有插件框架，但 `...aodservice.permission.SERVICEBOX_REMOTEVIEWS` 是
+   `prot=signature|privileged`——**root 也绕不过**（签名校验不看 uid）。
+3. Good Lock/LockStar 碰不到媒体控件；Galaxy Themes 改不了其布局；
+   AOD 的音乐组件是纯文字的（布局里没有封面 ImageView）。
+
+所以这个功能只做**背景层**：封面铺满，系统的时钟、通知、媒体卡片照常
+压在上面且全部可操作。做不到「大封面独占一块 + 播放条在下方」那种分层。
+
+### 恢复原壁纸：读不到原图，只能靠 `getWallpaperId` 判断「有没有」
+
+`getWallpaperFile(FLAG_LOCK)` 在 Android 13+ 对第三方**彻底不可用**：
+抛 `READ_EXTERNAL_STORAGE denied`，而该权限从 targetSdk 33 起已失效；
+`READ_MEDIA_IMAGES` 也救不了（服务端是两道串联与门，第一道就是它）；
+`READ_WALLPAPER_INTERNAL` 是 signature。Google 标记 **Won't Fix**。
+**别再尝试读原壁纸，也别为此声明 `READ_MEDIA_IMAGES`。**
+
+改用 `getWallpaperId(FLAG_LOCK)`——无需任何权限，但只能知道「有没有设过」。
+于是恢复只有两档：
+
+- **继承态**（没设过独立锁屏壁纸）→ `clear(FLAG_LOCK)` 完美还原。
+  **此时写任何图回去都是错的**：会把「跟随桌面」变成「固定一张」，
+  用户之后改桌面壁纸锁屏不再跟随，且不会知道是 nudge 干的。
+- **设过** → 只能用用户指定的恢复图；**没有就不允许开启**。
+  这是刻意的阻拦，不是校验的副产物。
+
+判定**必须在第一次写入之前**做并持久化——自己写过一次之后，系统就认为
+「设过」了。三星上 `clear` 不删 lock 条目（`dumpsys` 里 `id=16` 仍在），
+所以很可能恒判为「设过」；**这是可接受的**，它偏向安全那一侧。
+
+`RestorePlanTest` 用穷举拦着「继承态被改成写图」这个方向。
+
+### 写入很贵，四条优化里「熄屏不写」收益最大
+
+系统把壁纸存成 **PNG（无损）**，照片类内容几乎压不动。所以每次写入
+= 几 MB 无损编码 + 落盘 + 解码取色 + 锁屏重绘。实测 1080×2400 单次
+**约 1.5 秒**（烘焙只占 155ms，其余全在系统那一步）。
+
+- **熄屏不写**（`deferWhileScreenOff`，默认开）：听歌时屏幕大多黑着，
+  写了白看不见。攒住待写项，亮屏补写**最后**一个。
+- **去抖** 800ms、**同图不写**（比对 mediaId + 配置指纹）
+- `renderScale` 可降分辨率换速度（0.7 档写入降到 807ms），默认不降
+
+这些时序逻辑真机上极难复现（要造「熄屏期间连切三首」只能靠手速），
+所以收敛进纯函数 `WritePolicy` 单测。它抓出过一个真 bug：用
+`Long.MIN_VALUE` 当「从未写入」的哨兵，`nowMs - Long.MIN_VALUE`
+**溢出成负数**，第一次写入被误判成在去抖窗口内——表现为
+「开启后第一首歌不换壁纸」。
+
+**恢复原壁纸后必须清掉 `lastWrittenKey`**，否则同一首歌会被「同图不写」
+挡住，表现为「暂停恢复后继续播放，封面壁纸回不来」。
+
+### 烘焙走离屏软件画布，与 `AlbumBackdrop` 共用几何
+
+`Modifier.blur()` 是 GPU 的 `RenderEffect`，**只在活的组合里成立、
+拿不到 bitmap**，所以壁纸不能复用 `AlbumBackdrop`，得另走一条
+`android.graphics` 的路（`BackdropBaker`）。
+
+模糊用「缩小再放大」而非 `RenderEffect`：`drawRenderNode` 只在**硬件
+画布**上可用，而离屏 `Canvas(bitmap)` 是软件画布。真要用得搭
+`HardwareRenderer` + `ImageReader` 一整套，为一个本来就要糊掉的背景
+不划算。`RenderScript` 已在 API 31 废弃。
+
+两条渲染路径的几何**全部收敛到 `BackdropGeometry`**（纯 Kotlin，
+`BackdropGeometryTest` 13 个用例）。各写一份的话，改了一处忘了另一处，
+壁纸与主界面就会长得不一样，而这在代码里看不出来。
+
+**输出尺寸必须用 `maximumWindowMetrics`**，不能用 `resources.displayMetrics`
+——后者是应用窗口（实测 1080×**2277**），少的 123px 会被系统拉伸。
+
+### 设置页的预览画的是**成品本身**
+
+`LockWallpaperScreen` 直接显示 `BackdropBaker` 烘焙出的 bitmap，
+不是用 `AlbumBackdrop` 实时渲染一份「差不多的」——两条渲染路径实现不同，
+另画一份的话调好了写进去不一样，预览就没意义了。
+
+预览框上叠**时钟与媒体卡片的位置示意**（比例量自真机锁屏截图）。
+没有它用户没法判断清晰区会不会被系统卡片压住，而那正是要调
+`centerY` 的原因——**视觉中心因人而异**（时钟大小、有没有放小组件），
+写死一个值只对作者自己合适。
+
+配置**独立于 `NudgeConfig`、不进 `ProfileCodec`**：锁屏壁纸是设备级的
+环境设定，切预设不该改它。这也避开了「加配置项要同时改五处」那条连锁。
+
 ## 应用内更新
 
 设置页手动触发，不做启动自动检查——这是刻意的，盲操工具不该在启动时弹更新提示。
@@ -1207,7 +1309,7 @@ adb shell dumpsys media_session | ag -u -o 'description=[^,]*|state=(PLAYING|PAU
 JAVA_HOME=/opt/homebrew/opt/openjdk@17 ./gradlew test
 ```
 
-155 个单元测试，主体在 `GestureRecognizer`——正例（七种手势 × 三档灵敏度）、边界（阈值临界、滑动死区）、负例（斜滑、两指反向、单指滑动、三指降级、指数不符、超时）。**动手势逻辑必须补相应测试**，尤其是防误触的负例。
+192 个单元测试，主体在 `GestureRecognizer`——正例（七种手势 × 三档灵敏度）、边界（阈值临界、滑动死区）、负例（斜滑、两指反向、单指滑动、三指降级、指数不符、超时）。**动手势逻辑必须补相应测试**，尤其是防误触的负例。
 
 预设部分由 `ProfileCodecTest` 覆盖 round-trip 与宽容解码，`ProfileSlotTest` 覆盖槽位号解析。
 
@@ -1232,6 +1334,15 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@17 ./gradlew test
   这是「低清换高清不跳变」的核心不变式，它在代码里看不出来，
   真机上也只有切歌那一瞬间才暴露，所以专门抽成纯函数来钉住。
   函数签名里**不该出现 bitmap 尺寸**，有测试拦着「将来别把它加回去」。
+
+锁屏壁纸由三组纯逻辑测试覆盖（`wallpaper/` 下，共 35 个）：
+
+- `BackdropGeometryTest`：排版只取决于比例、清晰区半径随层号递减且都为正、
+  **蒙版色标严格递增**（清晰区贴边时撞标会让真机直接崩，用九档比例 ×
+  五个极端 centerY × 四层穷举）。
+- `WritePolicyTest`：去抖、熄屏攒住（要写**最后**一首不是第一首）、
+  同图不写、**恢复后同一首歌必须能重写回去**。这些时序在真机上极难复现。
+- `RestorePlanTest`：恢复的两个分支，**穷举拦住「继承态被改成写图」**。
 
 `ArtworkFetcherGuardTest` 覆盖非网易云播放器那条：形如 `dQw4w9WgXcQ`、
 `spotify:track:abc` 的 mediaId 必须在发请求**之前**就返回 null。
@@ -1361,6 +1472,23 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@17 ./gradlew test
   开启时应分别是 `PINNED` 与覆盖整屏的 `SkRegion`（如 `(0,78,1080,2400)`，
   78 是刘海高度）；关闭时是 `NONE` 与只剩滚动条的小矩形。第 2 层看返回键
   按一次是否退出。
+- 锁屏壁纸的五项。开关与耗时都能从 logcat 读出来，不必靠肉眼：
+
+  ```bash
+  adb shell am broadcast -a com.nudge.app.LOCKWP \
+    -n com.nudge.app/.wallpaper.LockWallpaperDebugReceiver --es cmd bake
+  adb logcat -d | ag -u '耗时|写入锁屏壁纸'
+  ```
+
+  1. **关闭功能后壁纸回到原样**（最重要的一条，截图比对）。分别在
+     「继承态」与「设过独立锁屏壁纸」两种情形下各测一次——前者要断言
+     锁屏**仍跟随桌面壁纸**（改一次桌面壁纸看锁屏跟不跟），
+     而不是被固定成一张图。
+  2. **熄屏期间切歌零写入**，亮屏只补写**最后**一首（logcat 数写入次数）。
+  3. 暂停 `restoreDelaySec` 后自动恢复；**恢复播放能重新写回同一首歌**
+     （防「同图不写」把它挡掉）。
+  4. 连切十首断言 Native heap 不持续上涨（实测 79MB → 31MB，不涨反降）。
+  5. 飞行模式下切歌断言 `hiRes=false`（回落 363）且不崩。
 - 存两个预设后查 shortcut，断言两条都在且 title 是用户起的名字；
   删掉一个后再查，断言只剩一条（防 sync 漏调或误用 `addDynamicShortcuts` 回归）：
 
