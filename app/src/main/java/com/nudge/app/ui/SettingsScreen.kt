@@ -70,6 +70,7 @@ fun SettingsScreen(
     onInstallUpdate: (ReleaseInfo) -> Unit,
     onOpenLyricsLab: () -> Unit,
     onOpenHapticLab: () -> Unit,
+    onOpenCoverLab: () -> Unit,
     onBack: () -> Unit,
 ) {
     Column(
@@ -183,54 +184,22 @@ fun SettingsScreen(
         // 歌词动画实验室同样只在 debug 包里：它是开发期的取景器，
         // 调出来的值要手抄回 LyricsAnimSpec.DEFAULT，不做持久化也不面向用户。
         if (BuildConfig.DEBUG) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 2.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .clickable(onClick = onOpenLyricsLab)
-                    .padding(horizontal = 8.dp, vertical = 12.dp),
-            ) {
-                Column {
-                    Text(
-                        text = "歌词动画实验室",
-                        fontSize = 15.sp,
-                        color = MaterialTheme.colorScheme.onBackground,
-                    )
-                    Text(
-                        text = "用假歌词实时调滚动参数，仅 debug 包可见",
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
-                    )
-                }
-            }
+            LabRow(
+                label = "歌词动画实验室",
+                hint = "用假歌词实时调滚动参数，仅 debug 包可见",
+                onClick = onOpenLyricsLab,
+            )
         }
 
         // 振动实验室同理：调出来的值要手抄回 HapticPalette，不做持久化。
         // 放在「反馈」这个独立分组下而不是塞进歌词组——两者调的是完全不同的东西。
         if (BuildConfig.DEBUG) {
             SectionTitle("反馈")
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 2.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .clickable(onClick = onOpenHapticLab)
-                    .padding(horizontal = 8.dp, vertical = 12.dp),
-            ) {
-                Column {
-                    Text(
-                        text = "振动实验室",
-                        fontSize = 15.sp,
-                        color = MaterialTheme.colorScheme.onBackground,
-                    )
-                    Text(
-                        text = "逐条试听并调整各动作的振动波形，仅 debug 包可见",
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
-                    )
-                }
-            }
+            LabRow(
+                label = "振动实验室",
+                hint = "逐条试听并调整各动作的振动波形，仅 debug 包可见",
+                onClick = onOpenHapticLab,
+            )
         }
 
         SectionTitle("防误触")
@@ -255,6 +224,16 @@ fun SettingsScreen(
                 hint = mode.hint,
                 selected = config.displayMode == mode,
                 onClick = { onDisplayModeChange(mode) },
+            )
+        }
+
+        // 封面实验室挂在「显示模式」下：它调的是封面模式下那张高清图的
+        // 请求比例，与另两个实验室并列但归属不同的分组。
+        if (BuildConfig.DEBUG) {
+            LabRow(
+                label = "封面实验室",
+                hint = "逐档试高清封面的请求比例，仅 debug 包可见",
+                onClick = onOpenCoverLab,
             )
         }
 
@@ -467,6 +446,38 @@ internal fun SectionTitle(text: String) {
         color = MaterialTheme.colorScheme.primary,
         modifier = Modifier.padding(start = 24.dp, top = 24.dp, bottom = 8.dp),
     )
+}
+
+/**
+ * 实验室入口行。三个实验室长得一样，抽出来是因为它们**必须**长得一样——
+ * 复制三份的话，改一处格式忘了另外两处就会出现「同一类入口三种样子」。
+ *
+ * 与 [NavRow] 分开而不复用：那个右侧带「>」，是面向用户的功能导航；
+ * 这几行只在 debug 包里出现，是开发期的旁支，不该混进正式的导航序列。
+ */
+@Composable
+private fun LabRow(label: String, hint: String, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 2.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 8.dp, vertical = 12.dp),
+    ) {
+        Column {
+            Text(
+                text = label,
+                fontSize = 15.sp,
+                color = MaterialTheme.colorScheme.onBackground,
+            )
+            Text(
+                text = hint,
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
+            )
+        }
+    }
 }
 
 /**

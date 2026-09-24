@@ -123,7 +123,10 @@ fun TrackpadScreen(
 
         if (albumMode) {
             AlbumBackdrop(
-                artwork = track?.artwork,
+                // 高清那张拉到了就用它，没拉到（无网络、非网易云、还在拉）
+                // 就继续用 MediaSession 那张 363 的当占位。不等高清图到位再显示——
+                // 切歌瞬间封面空一下比糊一点更难看。
+                artwork = track?.hiResArtwork ?: track?.artwork,
                 // 歌词开着时退化成统一的模糊氛围层，清晰封面淡出
                 lyricsMode = config.lyricsEnabled,
                 headerHeight = headerHeight,
@@ -238,10 +241,10 @@ private fun BoxScope.ContentLayer(
     // 是参数生效了，还是这首歌本来就长这样」，而调参全靠肉眼比对。
     // release 恒 false（见 LyricsAnimOverride.isActive），角标不存在。
     //
-    // 歌词与振动共用**一个**角标：它要回答的是「现在跑的是不是实验室
-    // 调出来的参数」，而这个问题对两者是同一个。拆成两个角标反而要
+    // 三个实验室共用**一个**角标：它要回答的是「现在跑的是不是实验室
+    // 调出来的参数」，而这个问题对三者是同一个。拆成三个角标反而要
     // 用户先分辨是哪一个亮着，而角标本身只是个消歧提示。
-    if (LyricsAnimOverride.isActive || HapticOverride.isActive) {
+    if (LyricsAnimOverride.isActive || HapticOverride.isActive || CoverOverride.isActive) {
         Text(
             text = "LAB",
             fontSize = 10.sp,

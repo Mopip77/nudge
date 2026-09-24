@@ -11,6 +11,14 @@ data class TrackInfo(
     val album: String = "",
     /** 专辑封面，网易云实测为 363x363 ARGB_8888。无封面时为 null。 */
     val artwork: Bitmap? = null,
+    /**
+     * 绕过 MediaSession 另拉的高清封面（见 [com.nudge.app.media.ArtworkFetcher]）。
+     * 未拉到、未拉完、非网易云播放器时为 null。
+     *
+     * **不替换 [artwork]**：363 那张是随播放状态同步拿到的，要继续当占位
+     * 立即显示，否则切歌瞬间封面会空一下。渲染侧取 `hiResArtwork ?: artwork`。
+     */
+    val hiResArtwork: Bitmap? = null,
     /** 总时长，毫秒。未知为 0。 */
     val durationMs: Long = 0,
     /** 播放头位置，毫秒。它是 [positionUpdateTimeMs] 那一刻的快照，不可直接显示。 */

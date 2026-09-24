@@ -20,6 +20,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.ExperimentalComposeUiApi
 import com.nudge.app.action.ActionDispatcher
 import com.nudge.app.config.ConfigStore
+import com.nudge.app.config.DisplayMode
 import com.nudge.app.config.NudgeConfig
 import com.nudge.app.config.PROFILE_SLOT_COUNT
 import com.nudge.app.config.ProfileShortcuts
@@ -27,8 +28,11 @@ import com.nudge.app.config.ProfileSlot
 import com.nudge.app.lyrics.LyricsRepository
 import com.nudge.app.lyrics.LyricsState
 import com.nudge.app.media.ActionResult
+import com.nudge.app.media.ArtworkCache
 import com.nudge.app.media.MediaControlRepository
 import com.nudge.app.media.TrackInfo
+import com.nudge.app.ui.CoverLabScreen
+import com.nudge.app.ui.CoverOverride
 import com.nudge.app.ui.HapticLabScreen
 import com.nudge.app.ui.LyricsLabScreen
 import com.nudge.app.config.ActionType
@@ -111,6 +115,7 @@ class MainActivity : ComponentActivity() {
             // 互斥的枚举：从实验室返回要退回设置页，而不是一路退回主界面。
             var showLyricsLab by remember { mutableStateOf(false) }
             var showHapticLab by remember { mutableStateOf(false) }
+            var showCoverLab by remember { mutableStateOf(false) }
             // 手势绑定二级页。用可空的 ActionType 而非布尔量：这一页必须知道
             // 是在给哪个动作配手势，null 即「不在这一页」。
             var bindingAction by remember { mutableStateOf<ActionType?>(null) }
@@ -132,7 +137,14 @@ class MainActivity : ComponentActivity() {
                     }
                     val current = withContext(Dispatchers.IO) { repository.currentTrack() }
                     hasPermission = permission
-                    track = current
+                    // 高清封面要跨轮询保留：它由下面那个 LaunchedEffect 异步拉，
+                    // 而这里每秒重建一次 TrackInfo，直接赋值会把它每秒抹掉一次，
+                    // 表现为封面在高清与 363 之间反复闪。只在同一首歌里保留。
+                    track = current?.copy(
+                        hiResArtwork = track
+                            ?.takeIf { it.mediaId == current.mediaId }
+                            ?.hiResArtwork
+                    )
                     delay(1000)
                 }
             }
@@ -167,6 +179,26 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
+            // 高清封面。同上：以 mediaId 为 key，切歌自动取消上一次未完成的
+            // 请求，避免旧封面错配到新歌上。
+            //
+            // **仅封面模式才拉**：简洁模式只有 52dp 的小图，363 那张绰绰有余，
+            // 为它跑一次网络往返加一次 6MB 的解码没有意义。
+            // coverAspect 也作为 key，实验室里换比例后立刻重拉。
+            val albumMode = config.displayMode == DisplayMode.ALBUM
+            val coverAspect = CoverOverride.current
+            val screenWidthPx = resources.displayMetrics.widthPixels
+            LaunchedEffect(mediaId, albumMode, coverAspect) {
+                if (mediaId.isNullOrBlank() || !albumMode) return@LaunchedEffect
+                val hiRes = ArtworkCache.load(mediaId, coverAspect, screenWidthPx)
+                    ?: return@LaunchedEffect
+                // 拉完期间可能已经切歌，此时这张图是旧歌的，丢掉。
+                // effect 的取消不保证能在 track 被改之前生效，故再比一次。
+                if (track?.mediaId == mediaId) {
+                    track = track?.copy(hiResArtwork = hiRes.bitmap)
+                }
+            }
+
             NudgeTheme(themeMode = config.themeMode) {
                 Surface {
                     val editingAction = bindingAction
@@ -176,6 +208,12 @@ class MainActivity : ComponentActivity() {
                     } else if (showHapticLab) {
                         BackHandler { showHapticLab = false }
                         HapticLabScreen(onBack = { showHapticLab = false })
+                    } else if (showCoverLab) {
+                        BackHandler { showCoverLab = false }
+                        CoverLabScreen(
+                            track = track,
+                            onBack = { showCoverLab = false },
+                        )
                     } else if (editingAction != null) {
                         // 与实验室同理：这是设置页的下一层，返回要退回设置页。
                         // 判断放在 showSettings 之前，否则会被设置页那一支拦截。
@@ -297,6 +335,7 @@ class MainActivity : ComponentActivity() {
                             },
                             onOpenLyricsLab = { showLyricsLab = true },
                             onOpenHapticLab = { showHapticLab = true },
+                            onOpenCoverLab = { showCoverLab = true },
                             onBack = { showSettings = false },
                         )
                     } else {

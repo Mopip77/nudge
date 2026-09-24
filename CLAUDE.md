@@ -32,6 +32,9 @@ ActionDispatcher  ──► HapticPalette → HapticSpec.render() → HapticPlay
 MediaControlRepository ──► NotificationListenerService → MediaSessionManager
                            回退: AudioManager.dispatchMediaKeyEvent
 
+ArtworkCache ──► ArtworkFetcher ──► 网易云 song/detail (高清封面, 绕开 MediaSession)
+                      ▲── CoverAspect.paramFor ◄── CoverOverride ◄── CoverLabScreen (debug)
+
 UpdateChecker ──► GitHub API /releases/latest
 ApkDownloader ──► UpdateInstaller → FileProvider → 系统安装器
 ```
@@ -499,7 +502,9 @@ last = maxOf(v.coerceIn(0f, 1f), last + eps)
 
 背景本身要铺满整个窗口（含顶栏背后），否则顶上会留一条突兀的背景色。
 
-## 封面只有 363×363，没有更清晰的来源
+## 高清封面：MediaSession 只有 363，绕开它去查网易云
+
+### MediaSession 这条路到头了
 
 **真机取证**（网易云 / One UI 5.1，加临时日志打 `MediaMetadata` 实况）：
 
@@ -507,15 +512,117 @@ last = maxOf(v.coerceIn(0f, 1f), last + eps)
   同一张图，换几首歌都一样
 - 三个 URI key（`ALBUM_ART_URI` / `ART_URI` / `DISPLAY_ICON_URI`）**全是 null**
 
-所以经 MediaSession 拿不到更高清的封面，**别再去找「更好的获取方式」**。
-铺满 1080px 宽必然是 3 倍上采样，中心那一档天生偏软，这是数据源的上限
-而非渲染问题。梯度模糊反而帮了忙：上下本来就要糊，只有中间一条顶着上采样。
+所以经 MediaSession 拿不到更高清的封面，**别再在 `MediaMetadata` 里找**。
+铺满 1080px 宽是 3 倍上采样，封面模式下糊得肉眼可见。
 
-封面也**恒为正方形**，没遇到过非方的。但 `BlurLayer` 仍用 `FillBounds`
-而非 `Crop`：真出现非方封面时宁可轻微拉伸，也好过把两侧裁掉。
+### 改为用歌曲 id 查 `song/detail` 拿 `picUrl`
+
+`media/ArtworkFetcher.kt`。`METADATA_KEY_MEDIA_ID` 就是网易云的真实歌曲 id
+（与歌词同源，依据见 `LyricsFetcher` 的注释），所以能直接查，
+**无需按歌名搜索匹配**。实测原图 **640~1700 见方**，按歌不同，
+全部远超 MediaSession 那张 363。
+
+**不做文本模糊匹配**（iTunes / Deezer / Cover Art Archive）：实测 iTunes
+搜「陈奕迅 异梦」返回的是 Unconditional 和 The Album，全不对。用 id 查是精确的，
+文本搜索是猜的——盲操下匹配错了会显示另一张专辑的封面，而用户不一定察觉。
 
 没去读网易云的私有缓存拿原图：要么依赖 root，要么依赖它的内部目录结构，
-两者都会在它改版后静默失效，不该进产品。
+两者都会在它改版后静默失效，不该进产品。也没引 Coil/Glide，一个 GET 不值得。
+
+#### `?param=WxH` 做的是**居中裁切**，不是拉伸
+
+逐像素比对确认：与居中裁切假设的平均通道差 5.6，与纯拉伸假设 34.3，相差 6 倍。
+所以非方比例是可用的——裁掉的是封面上下，而不是把人脸压扁。
+但哪个比例好看取决于封面自身的构图，只能肉眼试，故交给封面实验室
+（`ui/CoverLabScreen.kt`）。默认仍取方形，因为现有排版按方形摆。
+
+#### 长边超过原图会**静默回落成方图**
+
+实测（原图 1500 的那首）：请求 `1080y1620` 返回的是 **1500×1500**——
+既不是请求的比例，也没有任何错误提示；同图 `1080y1080` 则正常返回。
+
+准确的语义是「**从不上采样**」：请求超过原图时，接口给回原图本身，
+于是非方比例**连比例一起丢掉**。方形档不受影响（超限也只是拿到原图），
+真正会坏的只有非方档。所以请求前必须按原图长边等比降级，
+这就是 `media/CoverAspect.kt` 里 `paramFor` 做的事——**唯一值得单测的逻辑**，
+也正是最容易算错的（错了界面上看不出来）。
+
+原图边长**按歌不同**（实测 640 / 800 / 1500 / 1681 / 1700），
+所以降级必须运行时算，不能写死一个安全值——写死等于对多数歌放弃清晰度。
+
+#### 原图尺寸只能自己探，`song/detail` 里**没有**
+
+**真机取证**：`song/detail` 返回的 album 对象只有
+`picId` / `picUrl` / `pic` 等字段，**没有 `picWidth`/`picHeight`**
+（完整字段表见 `ArtworkFetcher.probeSourceEdge` 的注释）。
+早先按它取值，恒为 0 而落到写死的保守值，结果是所有歌都被压到那个值
+以下——白丢清晰度，且实验室里报的源图尺寸是假的。这个缺陷在界面上
+看不出来（图照样显示，只是小一号），是逐像素对比才发现的。
+
+改为读**原图自己的文件头**：带 `Range: bytes=0-4095` 只取前 4KB，
+配 `BitmapFactory.Options.inJustDecodeBounds` 解出尺寸而不解码像素。
+实测 CDN 认这个头（返回 206 + `content-range: bytes 0-4095/2829285`），
+4KB 足够覆盖 JPEG 的 SOF 段——比下整张原图（0.8~2.8MB）便宜两三个数量级。
+
+所以 `get()` 要同时接受 200 与 **206**，只认 200 的话探测恒失败。
+
+### 高清图**不替换** `artwork`，是并列的第二个字段
+
+`TrackInfo.hiResArtwork`。363 那张是随播放状态同步拿到的，要继续当占位
+立即显示；渲染侧取 `hiResArtwork ?: artwork`。等高清图到位再显示的话，
+切歌瞬间封面会空一下，比糊一点更难看。
+
+轮询那段（`MainActivity` 每秒重建 `TrackInfo`）必须**把 `hiResArtwork` 带过去**，
+且只在 `mediaId` 相同时带：直接赋值会把它每秒抹掉一次，表现为封面在
+高清与 363 之间反复闪。
+
+只在**封面模式**下拉：简洁模式只有 52dp 的小图，363 绰绰有余。
+
+### 缓存只留一张
+
+`media/ArtworkCache.kt`，键是 `mediaId + aspect`。高清图下载下来只有
+100~150KB，但 **1274² 的 ARGB_8888 解码后是 6.5MB**，攒十首就是 65MB。
+切歌时把上一张的强引用丢掉。
+
+**但不主动 `recycle()`**：切歌那一刻界面上画的仍是上一张（新的还没拉到），
+回收掉会让正在合成的那一帧抛 `trying to use a recycled bitmap`；
+而封面模式下每层模糊都持有它的引用，「还有没有人在画」精确判断不了。
+这里要的是「不攒着」而非「立刻释放」——真正会 OOM 的是无上限的 LRU，
+不是晚一个 GC 周期。
+
+与 `LyricsRepository` 不做缓存的口径不同，是因为代价不对称：歌词几 KB，
+重拉无所谓；封面是一次网络往返加一次大图解码，而播放状态每秒轮询一次。
+
+失败**不写缓存**，下次重组会再试——短暂断网恢复后能自愈。
+
+### 非网易云播放器必须能安全失败
+
+`skipTargetController` 会回落到任意正在播放的会话，此时 `mediaId` 不是
+网易云 id。`ArtworkFetcher.fetch` 因此先查「非纯数字直接返回 null」，
+同 `LyricsRepository.load` 的口径——不浪费一次必然失败的请求。
+
+### 封面恒为正方形，但 `BlurLayer` 仍用 `FillBounds`
+
+没遇到过非方的原图。用 `FillBounds` 而非 `Crop`：真出现非方封面时
+宁可轻微拉伸，也好过把两侧裁掉。
+
+### 封面实验室（仅 debug 包）
+
+设置页「显示模式」分组下 → `ui/CoverLabScreen.kt`。用真实的 `AlbumBackdrop`
+渲染预览（同歌词实验室「用同一套 composable」的口径），五个比例档位单选。
+
+**每档必须标注实际会拿到的尺寸**：静默回落在界面上看不出来，
+不标的话调参时只会看到「怎么选哪档都一样」，却不知道是被接口吞了。
+源图边长由 `ArtworkFetcher.Result.sourceEdge` 带回，不为此另查一次接口。
+
+标灰的口径是「**铺不满屏幕宽度**」（仍要上采样），不是「这一档坏了」——
+`paramFor` 永远保住比例，没有哪一档会退化成方图。早先拿
+「长边 < 屏宽」当判据，结果原图只有 800 的歌**五档全灰**，
+这个信号就失去了区分度。
+
+比例存在 `ui/CoverOverride.kt`，**只存内存不落盘**，理由同另两个实验室。
+**复用同一个 LAB 角标**，不新增——角标要回答的是「现在跑的是不是实验室
+参数」，这个问题对三者是同一个。
 
 ## 暂停态靠封面表达，不靠文字
 
@@ -989,7 +1096,7 @@ adb shell dumpsys media_session | ag -u -o 'description=[^,]*|state=(PLAYING|PAU
 JAVA_HOME=/opt/homebrew/opt/openjdk@17 ./gradlew test
 ```
 
-147 个单元测试，主体在 `GestureRecognizer`——正例（七种手势 × 三档灵敏度）、边界（阈值临界、滑动死区）、负例（斜滑、两指反向、单指滑动、三指降级、指数不符、超时）。**动手势逻辑必须补相应测试**，尤其是防误触的负例。
+155 个单元测试，主体在 `GestureRecognizer`——正例（七种手势 × 三档灵敏度）、边界（阈值临界、滑动死区）、负例（斜滑、两指反向、单指滑动、三指降级、指数不符、超时）。**动手势逻辑必须补相应测试**，尤其是防误触的负例。
 
 预设部分由 `ProfileCodecTest` 覆盖 round-trip 与宽容解码，`ProfileSlotTest` 覆盖槽位号解析。
 
@@ -1005,6 +1112,16 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@17 ./gradlew test
 **落差足够**、蓄力段刻意不爬满、**波形的形状两两不同**、歌词开关两条方向相反、
 高频反馈足够短。同样断言结构性约束而非具体数值——振动没法自动化测
 （只能上手摸），这一层是唯一的防回归手段。
+
+高清封面的请求尺寸由 `CoverAspectTest` 覆盖：不超限时按目标宽度取、
+超限时等比降级到源图边长、**降级后比例保持**（五档 × 五种实测源图边长全跑一遍）、
+源图极小时边长不为 0。这是整条封面链路里最容易算错的一环——
+**长边超限时接口静默回落成方图，界面上看不出来**。
+
+`ArtworkFetcherGuardTest` 覆盖非网易云播放器那条：形如 `dQw4w9WgXcQ`、
+`spotify:track:abc` 的 mediaId 必须在发请求**之前**就返回 null。
+它在 JVM 单测里能跑通本身就是证据——真发了请求会撞上 Android 的
+`Bitmap` 桩实现而失败。这条比真机更可靠：要复现得另找一个播放器正在播。
 
 渲染本身没有自动化测试，靠实验室肉眼看。**但实验室的假歌词只有 10 行、
 循环播放，`windowStart` 很快就卡在末尾**，测不出「窗口滑动后位移停摆」
@@ -1087,6 +1204,24 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@17 ./gradlew test
   中间两档仍会留下可辨认的五官，要专门看这条。
 - 封面模式换一张**浅色封面**（如苏打绿「迟到千年」），断言顶栏的
   歌名、歌手、进度条仍然读得清。只在深色封面上看会漏掉这条。
+- 高清封面这条链路的四项（见「高清封面」一节）：
+
+  1. 封面模式下切歌，断言封面明显比之前锐利。肉眼差别足够大，
+     不必逐像素量高频能量。
+  2. **飞行模式**下切歌，断言仍显示 363 那张、不崩、不卡——这是降级链，
+     无网络时 `ArtworkFetcher` 应静默返回 null。
+  3. 用**非网易云**播放器（YouTube）播放，断言不崩且显示原封面。
+     此时 `mediaId` 不是数字 id，应在发请求之前就被挡掉。
+  4. 连切十首歌，断言 Native/Java heap 不持续上涨（防高清 bitmap 泄漏——
+     1274² 的 ARGB_8888 一张就是 6.5MB）：
+
+     ```bash
+     adb shell dumpsys meminfo com.nudge.app | ag -u 'Native Heap|Java Heap'
+     ```
+- 封面实验室（debug 包）：逐档切比例，断言界面标注的尺寸与实际解码出来的
+  bitmap 尺寸一致，超限的档位确实标灰。**这条是那个「静默回落成方图」
+  行为的唯一可见化手段**，不看就不知道某一档其实没生效。
+  调过比例后返回主界面断言 LAB 角标亮起，「恢复默认」后熄灭。
 - 防误触模式开/关各一次，断言三层同步变化。`dumpsys` 能同时看到三层的状态，
   不必靠肉眼判断：
 
