@@ -1,0 +1,112 @@
+package com.nudge.app.wallpaper
+
+import com.nudge.app.media.CoverAspect
+import com.nudge.app.media.DEFAULT_COVER_ASPECT
+
+/**
+ * 锁屏专辑封面壁纸的配置。
+ *
+ * **刻意独立于 `NudgeConfig`，也不进 `ProfileCodec`。**
+ * 锁屏壁纸是设备级的环境设定，与「手势绑定 / 灵敏度」这类操作习惯不是
+ * 一回事——切预设不该顺带改壁纸行为。这同时避开了 CLAUDE.md
+ * 「加配置项要同时改五处」的连锁修改。
+ */
+data class LockWallpaperConfig(
+    /** 总开关。默认关——这个功能会改用户的锁屏壁纸，不能默认开。 */
+    val enabled: Boolean = false,
+
+    /**
+     * 清晰区中心占屏高的比例。
+     *
+     * 开放给用户调是因为**视觉中心因人而异**：时钟大小、有没有放小组件、
+     * One UI 版本不同，锁屏上"空着的那块"位置都不一样。写死一个值
+     * 只对作者自己合适。
+     */
+    val centerY: Float = BackdropGeometry.DEFAULT_CENTER_Y,
+
+    /** 清晰区大小的调节量，1.0 为默认。越小清晰区越窄、模糊延伸越多。 */
+    val sharpScale: Float = 1f,
+
+    /** 最远那档的模糊半径（dp）。越大延伸区越朦胧。 */
+    val maxBlurDp: Float = BackdropGeometry.BLUR_STEPS_DP.last(),
+
+    /** 整体压暗。锁屏上要压住封面才看得清系统的白字。 */
+    val scrimAlpha: Float = 0.30f,
+
+    /** 裁切比例，复用主界面那套。 */
+    val aspect: CoverAspect = DEFAULT_COVER_ASPECT,
+
+    /** 暂停多久后恢复原壁纸（秒）。沿用 MusWall 的默认值 5。 */
+    val restoreDelaySec: Int = 5,
+
+    /** 非网易云时用 MediaSession 那张 363 位图烘焙。 */
+    val fallbackToLowRes: Boolean = true,
+
+    /**
+     * 熄屏时攒住不写，亮屏后补写最后一次。
+     *
+     * 这是四条优化里收益最大的一条：正常听歌时屏幕大多是黑的，用户根本
+     * 看不到锁屏，写了白写——而每次写入都是一次几 MB 的 PNG 无损编码
+     * 加落盘（见设计文档 1.1）。顺带消掉大部分「写入时锁屏重绘」的可见性。
+     */
+    val deferWhileScreenOff: Boolean = true,
+
+    /**
+     * 烘焙缩放。壁纸本就是模糊背景，降一点分辨率能显著减少编码量。
+     * 默认 1.0（不降）——观感影响待实测，不确定就别默认省。
+     */
+    val renderScale: Float = 1f,
+) {
+    /**
+     * 参与「同图不写」比对的指纹。
+     *
+     * 只含**影响成品像素**的项：`restoreDelaySec` / `deferWhileScreenOff`
+     * 改了不必重写壁纸。漏掉会让用户调了参数看不到变化，多算了则会白写。
+     */
+    val renderFingerprint: String
+        get() = listOf(
+            centerY, sharpScale, maxBlurDp, scrimAlpha, aspect.name, renderScale,
+        ).joinToString(",")
+
+    companion object {
+        val DEFAULT = LockWallpaperConfig()
+
+        /** 各可调项的取值范围，UI 的滑块与解码的回落都用它，避免两处写两套。 */
+        val CENTER_Y_RANGE = 0.20f..0.80f
+        val SHARP_SCALE_RANGE = 0.40f..1.60f
+        val MAX_BLUR_RANGE = 8f..80f
+        val SCRIM_RANGE = 0f..0.70f
+        val RESTORE_DELAY_RANGE = 0..120
+        val RENDER_SCALE_RANGE = 0.50f..1f
+    }
+}
+
+/**
+ * 开启功能时原壁纸的状态。**恢复逻辑的正确性全靠它**。
+ *
+ * 真机取证：测试机上 `dumpsys wallpaper` 的 `Lock Wallpaper` 一节是
+ * `mWallpaperComponent=null`（静态图，可备份），但用户**没设过**独立
+ * 锁屏壁纸时锁屏继承桌面壁纸，此时 `getWallpaperFile(FLAG_LOCK)` 返回 null。
+ *
+ * 这两种情形的恢复动作**完全不同**，混为一谈会造成用户察觉不到的破坏。
+ */
+enum class OriginalWallpaperKind {
+    /** 设过独立锁屏壁纸，已备份成文件 → 恢复时写回。 */
+    BACKED_UP,
+
+    /**
+     * 没设过独立锁屏壁纸，锁屏继承桌面 → 恢复时必须 `clear(FLAG_LOCK)`。
+     *
+     * **此时写任何图回去都是错的**：那会把「继承桌面」变成「固定一张图」，
+     * 用户之后改桌面壁纸锁屏不再跟随，而他不会知道是 nudge 干的。
+     */
+    INHERITED,
+
+    /**
+     * 备份失败（部分 One UI 版本对第三方保护壁纸文件）→ 用用户指定的恢复图。
+     *
+     * 拿不到备份又没有用户指定图时**不允许开启功能**——不能让用户在
+     * 不知情的情况下丢掉原壁纸。
+     */
+    USER_SUPPLIED,
+}
