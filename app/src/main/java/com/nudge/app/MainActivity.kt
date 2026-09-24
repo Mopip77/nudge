@@ -33,6 +33,7 @@ import com.nudge.app.media.MediaControlRepository
 import com.nudge.app.media.TrackInfo
 import com.nudge.app.ui.CoverLabScreen
 import com.nudge.app.ui.LockWallpaperScreen
+import com.nudge.app.wallpaper.LockWallpaperService
 import com.nudge.app.ui.CoverOverride
 import com.nudge.app.ui.HapticLabScreen
 import com.nudge.app.ui.LyricsLabScreen
@@ -120,6 +121,15 @@ class MainActivity : ComponentActivity() {
 
         // 盲操场景下屏幕熄灭就没法操作了
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
+        // 锁屏壁纸服务开着就补拉起来。One UI 会杀后台，重启手机后服务也没了，
+        // 而用户那边表现为「壁纸忽然不跟着切歌了」，且没有任何提示——
+        // 打开应用是最自然的恢复时机。startForegroundService 对已在运行的
+        // 服务是幂等的（只多走一次 onStartCommand），不必先查状态。
+        //
+        // 不做开机自启（RECEIVE_BOOT_COMPLETED）：那要多一个权限，
+        // 而这个功能本来就依赖用户在用 nudge，进过一次应用就恢复了。
+        LockWallpaperService.resumeIfEnabled(this)
 
         // 这里不再无条件进沉浸式：三层防误触统一由配置开关控制，
         // 而配置来自 DataStore 的 Flow，要等下面的 LaunchedEffect 拿到真实值。

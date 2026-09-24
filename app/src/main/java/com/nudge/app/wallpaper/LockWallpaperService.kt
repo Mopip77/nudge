@@ -22,6 +22,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 
 /**
  * 把当前播放曲目的封面烘焙成锁屏壁纸。
@@ -248,6 +249,21 @@ class LockWallpaperService : Service() {
 
         fun stop(context: Context) {
             context.stopService(Intent(context, LockWallpaperService::class.java))
+        }
+
+        /**
+         * 配置里开着就把服务拉起来。应用启动时调，用于从「被系统杀掉」
+         * 或「重启手机」中恢复——那两种情况下用户只会看到壁纸不再跟着
+         * 切歌，没有任何提示。
+         *
+         * `runBlocking` 读一次 DataStore：在 `onCreate` 里必须同步拿到结果，
+         * 异步的话这一帧过后 Activity 可能已经走完初始化。读本地盘是毫秒级。
+         */
+        fun resumeIfEnabled(context: Context) {
+            val enabled = runCatching {
+                runBlocking { LockWallpaperStore(context).currentConfig().enabled }
+            }.getOrDefault(false)
+            if (enabled) start(context)
         }
     }
 }
