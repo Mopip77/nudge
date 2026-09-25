@@ -1042,9 +1042,9 @@ scale 必须排在 blur 之前），统一字号后这些全部不需要了。
 配套要单独申请 `FOREGROUND_SERVICE_SPECIAL_USE`，
 `startForeground` 也要带上 type 参数。
 
-### 锁屏壁纸由 live wallpaper 组件渲染时，一律拒绝开启
+### 特效壁纸（景深/立体）下**绝不能 clear**，只能写恢复图
 
-**这条真的覆盖过用户的锁屏壁纸。** S24 Ultra 上锁屏是
+**这条真的把用户的桌面和锁屏一起搞成了纯黑。** S24 Ultra 上壁纸是
 `LayeredWallpaperService`，即三星的**景深/立体壁纸**——
 用户挑的确实是相册里一张普通照片，只是开了「主体浮在时钟前面」
 那个效果，系统就把它包成了 live wallpaper 组件。
@@ -1054,17 +1054,42 @@ scale 必须排在 blur 之前），统一字号后这些全部不需要了。
 （真机上就发生过，用户的原话是「我选的就是一张图片呀」）。
 要说「壁纸带特效（景深/立体）」。
 
-恢复这类壁纸要重新绑定那个 **service**，需要 signature 级的
-`SET_WALLPAPER_COMPONENT`，第三方拿不到；用户指定的静态「恢复图」
-也救不了——写回去特效就没了。
+#### 写图安全、`clear` 危险，两者**不对称**
 
-成因是 `getWallpaperId` 对动态壁纸同样返回正数，只看 id 会把它误判成
-「设过静态图」，以为给张恢复图就能救。所以探测的**最前面**要用
-`getWallpaperInfo(FLAG_LOCK)`（只在 live wallpaper 时返回非 null）
-单独挡一道，`canEnable` 恒 false。
+这是整节的核心，也是最反直觉的一点：
 
-不做成「警告一下让用户自己决定」：用户没有能力判断这个操作不可逆，
-而代价是他自己的壁纸。
+| 操作 | 桌面 | 锁屏 |
+|---|---|---|
+| `setBitmap(FLAG_LOCK)` 写封面 | **完好**（景深照常渲染） | 封面 |
+| **`clear(FLAG_LOCK)`** | **纯黑** | **纯黑** |
+
+成因是三星的景深壁纸主屏与锁屏原本是**配对**的
+（logcat 里的 `isSystemAndLockPaired`）：`setBitmap` 只是把配对拆开、
+在锁屏那层盖一张图，桌面那个组件照跑；而 `clear` 删掉锁屏条目时
+配对已经拆了、回不到「继承桌面」，桌面的 live wallpaper 也因为
+丢了图源一起黑掉。
+
+所以**这一档有恢复图就允许开启**，恢复时写那张图。特效一定回不来
+（重新绑定 service 要 signature 级的 `SET_WALLPAPER_COMPONENT`），
+但「恢复成一张普通静态图」远好过「两块屏一起纯黑」，用户想要特效
+随时能自己再开一次。没有恢复图时宁可 `DoNothing` 留着封面。
+
+早先的结论是「这一档没有任何恢复手段，一律拒绝开启」——**那是错的**，
+它只看了「能不能完美还原」，没看**不还原的代价**。
+
+#### 探测要**同时查桌面**，只查锁屏会漏掉最常见的配置
+
+把用户桌面搞黑的正是这条漏网：**锁屏继承了一个 live wallpaper 桌面**。
+
+这种配置下早先的两道检查都不命中——锁屏自己没绑组件
+（`getWallpaperInfo(FLAG_LOCK)` 为 null），`getWallpaperId(FLAG_LOCK)`
+又是 `-1`，于是被判成普通 `INHERITED`，恢复时走 `clear`，两块屏一起黑。
+
+**多数人根本不会单独设锁屏壁纸**，所以「桌面特效 + 锁屏继承」反而比
+「锁屏自己绑组件」更常见。继承态必须再查一道不带参数的
+`getWallpaperInfo()`（查的就是桌面）。
+
+`RestorePlanTest` 用穷举拦着「特效壁纸落到 `ClearLock`」这个方向。
 
 ### 恢复原壁纸：读不到原图，只能靠 `getWallpaperId` 判断「有没有」
 
@@ -1367,7 +1392,7 @@ adb shell dumpsys media_session | ag -u -o 'description=[^,]*|state=(PLAYING|PAU
 JAVA_HOME=/opt/homebrew/opt/openjdk@17 ./gradlew test
 ```
 
-193 个单元测试，主体在 `GestureRecognizer`——正例（七种手势 × 三档灵敏度）、边界（阈值临界、滑动死区）、负例（斜滑、两指反向、单指滑动、三指降级、指数不符、超时）。**动手势逻辑必须补相应测试**，尤其是防误触的负例。
+198 个单元测试，主体在 `GestureRecognizer`——正例（七种手势 × 三档灵敏度）、边界（阈值临界、滑动死区）、负例（斜滑、两指反向、单指滑动、三指降级、指数不符、超时）。**动手势逻辑必须补相应测试**，尤其是防误触的负例。
 
 预设部分由 `ProfileCodecTest` 覆盖 round-trip 与宽容解码，`ProfileSlotTest` 覆盖槽位号解析。
 
@@ -1393,14 +1418,15 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@17 ./gradlew test
   真机上也只有切歌那一瞬间才暴露，所以专门抽成纯函数来钉住。
   函数签名里**不该出现 bitmap 尺寸**，有测试拦着「将来别把它加回去」。
 
-锁屏壁纸由三组纯逻辑测试覆盖（`wallpaper/` 下，共 35 个）：
+锁屏壁纸由三组纯逻辑测试覆盖（`wallpaper/` 下，共 40 个）：
 
 - `BackdropGeometryTest`：排版只取决于比例、清晰区半径随层号递减且都为正、
   **蒙版色标严格递增**（清晰区贴边时撞标会让真机直接崩，用九档比例 ×
   五个极端 centerY × 四层穷举）。
 - `WritePolicyTest`：去抖、熄屏攒住（要写**最后**一首不是第一首）、
   同图不写、**恢复后同一首歌必须能重写回去**。这些时序在真机上极难复现。
-- `RestorePlanTest`：恢复的两个分支，**穷举拦住「继承态被改成写图」**。
+- `RestorePlanTest`：恢复的各个分支，**穷举拦住「继承态被改成写图」**
+  与**「特效壁纸被改成 clear」**——后者真机上会把桌面和锁屏一起搞黑。
 
 `ArtworkFetcherGuardTest` 覆盖非网易云播放器那条：形如 `dQw4w9WgXcQ`、
 `spotify:track:abc` 的 mediaId 必须在发请求**之前**就返回 null。
@@ -1530,7 +1556,7 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@17 ./gradlew test
   开启时应分别是 `PINNED` 与覆盖整屏的 `SkRegion`（如 `(0,78,1080,2400)`，
   78 是刘海高度）；关闭时是 `NONE` 与只剩滚动条的小矩形。第 2 层看返回键
   按一次是否退出。
-- 锁屏壁纸的五项。开关与耗时都能从 logcat 读出来，不必靠肉眼：
+- 锁屏壁纸的六项。开关与耗时都能从 logcat 读出来，不必靠肉眼：
 
   ```bash
   adb shell am broadcast -a com.nudge.app.LOCKWP \
@@ -1561,11 +1587,27 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@17 ./gradlew test
      - 要触发**裸的 `clear`** 而非「写恢复图」，得先把恢复图移走
        （`run-as com.nudge.app rm files/lock_wallpaper_user.png`），
        让 `RestorePlan` 落到 `USER_SUPPLIED` 无图的兜底分支。测完记得放回去。
-  2. **熄屏期间切歌零写入**，亮屏只补写**最后**一首（logcat 数写入次数）。
-  3. 暂停 `restoreDelaySec` 后自动恢复；**恢复播放能重新写回同一首歌**
+  2. **特效壁纸（景深/立体）下关闭功能，桌面必须完好**。这条真机上把
+     用户的桌面和锁屏一起搞黑过，而单测拦不住「探测判错档」那一半。
+
+     构造条件：桌面设成景深壁纸，锁屏**不要**单独设（保持继承）——
+     `dumpsys` 里应是桌面绑 `LayeredWallpaperService`、锁屏 `id=-1`。
+
+     三个断言，全都有客观判据，不必靠肉眼：
+
+     - 探测报 `原壁纸形态=LIVE_WALLPAPER`（判成 `INHERITED` 就是回归了）
+     - 关闭时 logcat 里是 `notifyLockWallpaperChanged type = 0`（写入）
+       而非 **`type = 7`（clear）**——这是区分两条路径最直接的信号
+     - 全程桌面的 `id` 与 `mInfo.component` 不变
+
+     注意**写入本身是安全的**：启用期间桌面的景深壁纸完好无损，
+     只有 `clear` 会连桌面一起黑。所以光测「开启」测不出这个缺陷，
+     必须走完「关闭」。
+  3. **熄屏期间切歌零写入**，亮屏只补写**最后**一首（logcat 数写入次数）。
+  4. 暂停 `restoreDelaySec` 后自动恢复；**恢复播放能重新写回同一首歌**
      （防「同图不写」把它挡掉）。
-  4. 连切十首断言 Native heap 不持续上涨（实测 79MB → 31MB，不涨反降）。
-  5. 飞行模式下切歌断言 `hiRes=false`（回落 363）且不崩。
+  5. 连切十首断言 Native heap 不持续上涨（实测 79MB → 31MB，不涨反降）。
+  6. 飞行模式下切歌断言 `hiRes=false`（回落 363）且不崩。
 - 存两个预设后查 shortcut，断言两条都在且 title 是用户起的名字；
   删掉一个后再查，断言只剩一条（防 sync 漏调或误用 `addDynamicShortcuts` 回归）：
 

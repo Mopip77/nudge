@@ -128,18 +128,48 @@ class RestorePlanTest {
         )
     }
 
-    // ---- 动态壁纸：真的损坏过用户数据的那条 ----
+    // ---- 特效壁纸：真的把用户桌面搞黑过的那条 ----
 
     @Test
-    fun `锁屏是动态壁纸时，无论如何都不允许开启`() {
-        // 设置 live wallpaper 需要 signature 级的 SET_WALLPAPER_COMPONENT，
-        // 我们没有；静态的「恢复图」也替不回动态壁纸。这一档**根本没有
-        // 恢复手段**，唯一负责任的做法是不让开。
-        // 开发中在 S24 上真的这么弄丢过一次用户的锁屏动态壁纸。
-        assertFalse(RestorePlan.canEnable(OriginalWallpaperKind.LIVE_WALLPAPER, false))
+    fun `特效壁纸绝不能 clear——穷举`() {
+        // **这条是整个类里最重要的断言。**
+        //
+        // 真机实测（S24 Ultra / Android 16）：景深壁纸下 clear(FLAG_LOCK)
+        // 会把**桌面和锁屏一起变成纯黑**，而写图只影响锁屏。两者不对称，
+        // 所以这一档无论有没有恢复图都不能落到 ClearLock。
+        listOf(true, false).forEach { user ->
+            listOf(true, false).forEach { own ->
+                val action = RestorePlan.decide(OriginalWallpaperKind.LIVE_WALLPAPER, user, own)
+                assertTrue(
+                    "user=$user own=$own：特效壁纸下 clear 会把桌面一起搞黑，得到 $action",
+                    action != Action.ClearLock,
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `特效壁纸有恢复图才允许开启`() {
+        // 特效本身一定回不来（重新绑定 service 要 signature 级权限），
+        // 但「恢复成一张普通静态图」远好过「桌面锁屏一起纯黑」。
+        // 所以这一档按 USER_SUPPLIED 的口径处理，而不是一律拒绝。
         assertFalse(
-            "有恢复图也不行——静态图替不回动态壁纸",
+            "没有恢复图时不能开——关闭时就只能留着封面了",
+            RestorePlan.canEnable(OriginalWallpaperKind.LIVE_WALLPAPER, false),
+        )
+        assertTrue(
+            "有恢复图就该放行，代价（丢特效）由 UI 明确告知后用户自己承担",
             RestorePlan.canEnable(OriginalWallpaperKind.LIVE_WALLPAPER, true),
+        )
+    }
+
+    @Test
+    fun `特效壁纸没有恢复图时宁可什么都不做`() {
+        // 兜底分支（开启之后恢复图又被删了）。留着封面至少是张能看的图，
+        // 而 clear 会让桌面一起黑。
+        assertEquals(
+            Action.DoNothing,
+            RestorePlan.decide(OriginalWallpaperKind.LIVE_WALLPAPER, false, true),
         )
     }
 
@@ -151,12 +181,12 @@ class RestorePlanTest {
             listOf(true, false).forEach { user ->
                 if (RestorePlan.canEnable(kind, user)) {
                     val action = RestorePlan.decide(kind, user)
-                    // 继承态必须 clear；独立态有图就写图。
+                    // 继承态必须 clear；独立态与特效态有图就写图。
                     val ok = when (kind) {
                         OriginalWallpaperKind.INHERITED -> action == Action.ClearLock
-                        OriginalWallpaperKind.USER_SUPPLIED -> action == Action.WriteUserSupplied
-                        // 这一档不该被放行，走到这里本身就是错的
-                        OriginalWallpaperKind.LIVE_WALLPAPER -> false
+                        OriginalWallpaperKind.USER_SUPPLIED,
+                        OriginalWallpaperKind.LIVE_WALLPAPER,
+                        -> action == Action.WriteUserSupplied
                     }
                     assertTrue("kind=$kind user=$user 的恢复动作不对: $action", ok)
                 }

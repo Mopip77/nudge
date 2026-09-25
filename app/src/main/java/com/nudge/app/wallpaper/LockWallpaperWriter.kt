@@ -72,18 +72,30 @@ class LockWallpaperWriter(private val context: Context) {
             return OriginalWallpaperKind.INHERITED
         }
         return runCatching {
-            // **动态壁纸要最先查**：它是唯一「开了就绝对回不去」的情形，
+            // **特效壁纸要最先查**：它是唯一 clear 下去会把桌面一起搞黑的情形，
             // 而 getWallpaperId 对它同样返回正数，只看 id 会把它误判成
-            // 「设过静态图」，于是以为给张恢复图就能救——救不了。
+            // 「设过静态图」。
             //
-            // getWallpaperInfo(FLAG_LOCK) 只在锁屏是 live wallpaper 时
-            // 返回非 null，静态图恒为 null，正好是我们要的判据。
+            // getWallpaperInfo(FLAG_LOCK) 只在锁屏**自己**绑了 live wallpaper
+            // 时返回非 null。
             if (lockIsLiveWallpaper()) return OriginalWallpaperKind.LIVE_WALLPAPER
 
             if (wm.getWallpaperId(WallpaperManager.FLAG_LOCK) > 0) {
                 // 设过独立锁屏壁纸。读不到它的内容，只能请用户指定恢复图——
                 // 直接 clear 会把他原本那张锁屏壁纸弄丢。
                 OriginalWallpaperKind.USER_SUPPLIED
+            } else if (systemIsLiveWallpaper()) {
+                // **锁屏继承了一个 live wallpaper 桌面**——真机上把用户桌面
+                // 搞黑的就是这一条，而早先的代码完全没覆盖到。
+                //
+                // 这种配置下上面两道检查都不会命中：锁屏自己没绑组件
+                // （getWallpaperInfo(FLAG_LOCK) 为 null），id 又是 -1，
+                // 于是被判成普通 INHERITED，恢复时走 clear——而 clear
+                // 会连桌面一起黑掉（见 RestorePlan.decide 的注释）。
+                //
+                // 多数人根本不会单独设锁屏壁纸，所以「桌面特效 + 锁屏继承」
+                // 反而是**比锁屏自己绑组件更常见**的配置。
+                OriginalWallpaperKind.LIVE_WALLPAPER
             } else {
                 OriginalWallpaperKind.INHERITED
             }
@@ -185,6 +197,18 @@ class LockWallpaperWriter(private val context: Context) {
         } else {
             false
         }
+    }.getOrDefault(false)
+
+    /**
+     * **桌面**用的是不是 live wallpaper。
+     *
+     * 锁屏继承桌面时，锁屏画面其实是桌面那个组件渲染出来的，
+     * 危险的也是它——所以继承态必须再查这一道。不带参数的
+     * `getWallpaperInfo()` 查的就是桌面，各版本都有，不像
+     * 带 `which` 的重载要 API 34。
+     */
+    private fun systemIsLiveWallpaper(): Boolean = runCatching {
+        wm.wallpaperInfo != null
     }.getOrDefault(false)
 
     /** 清掉独立锁屏壁纸，回到「跟随桌面」。 */

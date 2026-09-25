@@ -62,10 +62,20 @@ object RestorePlan {
                 // 走到这里说明是开启之后恢复图又被删了，属于兜底。
                 if (userSuppliedAvailable) Action.WriteUserSupplied else Action.ClearLock
 
-            // 动态壁纸：canEnable 恒为 false，正常流程根本走不到这里。
-            // 真走到了说明是历史遗留状态（早先版本开过），clear 是唯一
-            // 能做的——动态壁纸我们本来就恢复不了，至少别留着封面。
-            OriginalWallpaperKind.LIVE_WALLPAPER -> Action.ClearLock
+            // **这一档绝不能 clear**，哪怕手上没有恢复图。
+            //
+            // 真机实测（S24 Ultra / Android 16）：景深壁纸下 clear(FLAG_LOCK)
+            // 会把**桌面和锁屏一起变成纯黑**。成因是三星的景深壁纸主屏与锁屏
+            // 原本是「配对」的（logcat 里的 isSystemAndLockPaired），
+            // setBitmap 写封面时把配对拆开——此时桌面仍正常，只有锁屏变封面；
+            // 而 clear 删掉锁屏条目后，配对已经拆了回不到「继承桌面」，
+            // 桌面那个 live wallpaper 也因为丢了图源一起黑掉。
+            //
+            // 写图只影响锁屏（实测：启用期间桌面的景深壁纸完好），
+            // 所以写图是安全的、clear 是危险的，两者不对称。
+            // 没有恢复图时宁可 DoNothing 留着封面——那至少是张能看的图。
+            OriginalWallpaperKind.LIVE_WALLPAPER ->
+                if (userSuppliedAvailable) Action.WriteUserSupplied else Action.DoNothing
         }
     }
 
@@ -80,10 +90,15 @@ object RestorePlan {
         when (kind) {
             OriginalWallpaperKind.INHERITED -> true
             OriginalWallpaperKind.USER_SUPPLIED -> userSuppliedAvailable
-            // 动态壁纸**无论如何都不给开**：设置 live wallpaper 需要
-            // signature 级的 SET_WALLPAPER_COMPONENT，我们没有，
-            // 静态的「恢复图」也替不回动态壁纸——这一档根本没有恢复手段。
-            // 开发中真的这么弄丢过一次用户的锁屏动态壁纸。
-            OriginalWallpaperKind.LIVE_WALLPAPER -> false
+            // 特效壁纸（景深/立体）：**有恢复图就允许开**，同 USER_SUPPLIED。
+            //
+            // 早先这里恒为 false，理由是「特效回不来，等于没有恢复手段」。
+            // 那个判断只看了「能不能完美还原」，没看**不还原的代价**——
+            // 实测 clear 会让桌面和锁屏一起变纯黑（见 decide 的注释），
+            // 而写一张静态图至少是个可用的状态，特效用户自己能再开。
+            //
+            // 代价是开启前必须**明确告知特效会丢失**，由用户知情后决定；
+            // 这与「静默破坏」是两回事。UI 侧的文案在 LockWallpaperScreen。
+            OriginalWallpaperKind.LIVE_WALLPAPER -> userSuppliedAvailable
         }
 }
