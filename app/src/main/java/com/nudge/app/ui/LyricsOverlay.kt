@@ -235,7 +235,36 @@ internal fun LyricsScroller(
     val lyricColor = textColor ?: MaterialTheme.colorScheme.onSurface
 
     // 前奏期间把第一行当作"即将唱的行"摆到锚点位置
-    val anchorIndex = if (currentIndex < 0) 0 else currentIndex
+    val focusIndex = if (currentIndex < 0) 0 else currentIndex
+
+    // **排版用的行号滞后于焦点用的行号**，这是「焦点先行」得以成立的关键。
+    //
+    // 早先 focusLeadMs 只作用在 offsetAnim 的 delayMillis 上，而那条路径
+    // **只在歌曲开头**（windowStart 还钉在 0 时）才驱动位移。唱过头几行后
+    // targetOffsetY 冻结成常数，位移全部由 shiftAnim 完成，而它按设计
+    // 不带延迟（回收的是已发生的排版跳变，等不得）——于是真实播放的绝大
+    // 部分时间里，位移都是立刻开始的，无论 focusLeadMs 调到多大。
+    // 用户把滑块拖到 400ms 仍觉得「高亮和滚动同时进行」，就是这个原因。
+    //
+    // 根因是**排版跳变在组合期就已发生**：windowStart 跟着当前行走，
+    // 换行当帧窗口就滑动、整列重新排版，pendingShift 只是把它补回来。
+    // 既然跳变本身躲不掉，就不能靠延迟「回收」来实现焦点先行——
+    // 那只会让跳变裸露在屏幕上（见 shiftSpec 的注释，那是 6e184ae 修过的坑）。
+    //
+    // 所以改为**让跳变本身晚发生**：排版侧继续按旧行号渲染，等焦点切完
+    // 再整体推进。此时位移与回收天然一起延后，两条路径不必再各自处理延迟。
+    var layoutIndex by remember { mutableIntStateOf(focusIndex) }
+    LaunchedEffect(focusIndex, spec.scrollDelayMs) {
+        // 延迟为 0（focusLeadMs <= 0）时不能走 delay：那会白白多等一帧，
+        // 把「位移先行」这一侧的时序也弄脏。
+        if (spec.scrollDelayMs > 0) delay(spec.scrollDelayMs.toLong())
+        layoutIndex = focusIndex
+    }
+    // 切歌时必须**立刻**对齐，不能等延迟：换歌是换内容不是换行，
+    // 让排版停在上一首的行号上会露出一整屏不相干的歌词。
+    LaunchedEffect(rows) { layoutIndex = focusIndex }
+
+    val anchorIndex = layoutIndex.coerceIn(0, rows.lastIndex)
 
     // 锚点行号按**这首歌实际有没有译文**定，而不是看译文开关。
     // 开关开着但这首歌没有译文时（网易云的纯中文歌常态），行高仍是 52dp，
@@ -417,16 +446,27 @@ internal fun LyricsScroller(
                     // offset 是**有向**的（负数表示在当前行上方），screenRow 是
                     // 这行动画结束后会落在屏幕上的第几行。前者管清晰度，
                     // 后者管弹簧——两套梯度的基准不同，不能合成一个参数。
-                    val offset = index - anchorIndex
+                    //
+                    // 两者现在还分别基于**不同的行号**：清晰度跟 focusIndex
+                    // （立即变），排版跟 anchorIndex（滞后 scrollDelayMs）。
+                    // 这正是焦点先行的实现方式——焦点切了，排版还没动。
+                    // 把 offset 也改成基于 anchorIndex 的话，高亮会跟着一起
+                    // 延后，整个延迟就白设了。
+                    val offset = index - focusIndex
+                    val layoutOffset = index - anchorIndex
                     LyricRow(
                         row = rows[index],
+                        // 用 currentIndex 而非 focusIndex：前奏期
+                        // （currentIndex == -1）第一行只是被摆到锚点位置
+                        // 占位，还没唱到，不该高亮。focusIndex 那里的
+                        // `< 0 -> 0` 是给排版用的，不是给焦点用的。
                         isCurrent = index == currentIndex,
                         offset = offset,
                         // 梯度基准必须用**实际**锚点而不是 spec.anchorRow：
                         // 锚点提了一行，当前行在屏幕上就真的落在第 anchorRow 行，
                         // 用基准值会让它取到曲线上偏下（更懒）的一点，
                         // 焦点行的起步比该有的慢半拍。
-                        screenRow = offset + anchorRow,
+                        screenRow = layoutOffset + anchorRow,
                         targetOffsetY = targetOffsetY,
                         // 本帧刚产生的窗口补偿量（父级统一算好），
                         // 各行据此在同一起点上开始这趟位移。
@@ -484,32 +524,27 @@ private fun LyricRow(
     // 时长对所有行相同是硬约束：若下面的行时长也更长，快歌连续换行时
     // 它们会追不上，位移累积起来越滚越偏。
     val rowEasing = easingFor(spec.easeAt(screenRow))
-    // delayMillis 让位移**等焦点切完再开始**（focusLeadMs > 0 时）。
-    // 这是 Apple Music 的时序：先高亮下一句，极短间隔后整列才滚动。
-    // focusLeadMs < 0 则这里恒为 0、由焦点那边延迟，即本项目早先的口径。
+
+    // **两条位移路径共用同一个 spec，且都不带延迟。**
+    //
+    // 这里曾经是两个 spec：scrollSpec 带 delayMillis = scrollDelayMs
+    // 用来实现焦点先行，shiftSpec 不带延迟因为它回收的是「已经发生的
+    // 排版跳变」，等不得（延迟它会让跳变裸露在屏幕上 3~4 帧，
+    // 真机逐帧量到第 1 帧跳 76px 后静止 3~4 帧，就是「一卡一卡」）。
+    //
+    // 但那个方案只在**歌曲开头**成立：windowStart 一旦跟着当前行走，
+    // targetOffsetY 就冻结成常数，位移全部由 shiftAnim 完成，
+    // 而它恰恰是不带延迟的那条——于是真实播放的绝大部分时间里
+    // 焦点先行根本没生效，滑块拖到 400ms 也还是「高亮与滚动同时进行」。
+    //
+    // 现在延迟上移到了排版侧（见 LyricsScroller 的 layoutIndex）：
+    // 排版跳变本身就晚发生，两条路径于是天然一起延后，各自都不必再等。
+    // 这也消掉了「两条路径对延迟需求相反」这个本来就很别扭的分叉。
     val scrollSpec = tween<Float>(
         durationMillis = spec.settleTweenMs,
-        delayMillis = spec.scrollDelayMs,
         easing = rowEasing,
     )
-
-    // 窗口补偿**专用**的 spec，与 scrollSpec 的唯一差别是**不带延迟**。
-    //
-    // 这两条路径对延迟的需求是相反的，不能共用：
-    //
-    // - scrollSpec 走的是「从当前位置挪到新位置」，延迟它＝晚一点开始滚动，
-    //   正是焦点先行想要的。
-    // - shiftAnim 走的是「把一个**已经发生的排版跳变**收回来」。
-    //   pendingShift 在组合期同步生效、当帧就把整列推走了，若回收这一侧
-    //   还要等 90ms，那个跳变就会**裸露在屏幕上** 3~4 帧。
-    //
-    // 真机逐帧量到的就是这个：换行第 1 帧整列跳 76px，接着 3~4 帧完全静止
-    // （0px），然后才开始正常的加速-减速曲线。那段静止就是用户说的
-    // 「一卡一卡」，峰值/均值达到 5.7 倍（均匀滚动应接近 2）。
-    val shiftSpec = tween<Float>(
-        durationMillis = spec.settleTweenMs,
-        easing = rowEasing,
-    )
+    val shiftSpec = scrollSpec
 
     // 窗口滑动的补偿量。
     //
@@ -539,8 +574,9 @@ private fun LyricRow(
     LaunchedEffect(shiftEpoch) {
         if (pendingShift != 0f) {
             shiftAnim.snapTo(shiftAnim.value + pendingShift)
-            // 用 shiftSpec（无延迟）而非 scrollSpec：回收必须立刻开始，
-            // 否则排版跳变会裸露在屏幕上。见 shiftSpec 处的注释。
+            // 回收必须立刻开始，否则排版跳变会裸露在屏幕上。
+            // 现在 shiftSpec 与 scrollSpec 是同一个（都不带延迟），
+            // 延迟统一由排版侧的 layoutIndex 承担。
             shiftAnim.animateTo(targetValue = 0f, animationSpec = shiftSpec)
         }
     }
@@ -554,12 +590,13 @@ private fun LyricRow(
             offsetAnim.snapTo(targetOffsetY)
             settled = true
         } else {
-            // 与 shiftAnim 用**同一条缓动曲线、同一个时长**，只有延迟不同
-            // （见 shiftSpec）。这条路径只在歌曲开头（窗口还没滑动）走，
-            // 但两段的观感必须一致，否则唱到第 6 行时手感会突然变一下。
+            // 与 shiftAnim 用**同一个 spec**。这条路径只在歌曲开头
+            // （窗口还没滑动）走，但两段的观感必须一致，
+            // 否则唱到第 6 行时手感会突然变一下。
             //
-            // 这里吃延迟是对的：它是真的「挪到新位置」，晚一点开始
-            // 正是焦点先行要的。shiftAnim 那边是回收已发生的跳变，不能等。
+            // 两条路径的延迟需求现在也一致了（都不带）：targetOffsetY
+            // 本身就是从滞后的 anchorIndex 算出来的，它变化的那一刻
+            // 焦点已经先行过了。
             offsetAnim.animateTo(targetOffsetY, animationSpec = scrollSpec)
         }
     }

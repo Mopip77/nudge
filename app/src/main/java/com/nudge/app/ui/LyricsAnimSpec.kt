@@ -257,7 +257,16 @@ data class LyricsAnimSpec(
     /** 焦点（alpha / blur）动画的起始延迟。焦点先行时为 0。 */
     val focusDelayMs: Int get() = if (focusLeadMs >= 0) 0 else -focusLeadMs
 
-    /** 位移动画的起始延迟。位移先行时为 0。 */
+    /**
+     * 位移的起始延迟。位移先行时为 0。
+     *
+     * **不是动画 spec 的 delayMillis**，而是 `LyricsScroller` 里排版行号
+     * （layoutIndex）滞后于焦点行号的时长。早先确实是挂在 tween 的
+     * delayMillis 上，但那样只在歌曲开头生效——窗口开始滑动后位移改由
+     * shiftAnim 驱动，而它为了不让排版跳变裸露必须无延迟，于是焦点先行
+     * 在真实播放的绝大部分时间里都是失效的。
+     * 改成延迟排版本身之后，两条位移路径都自动跟着延后。
+     */
     val scrollDelayMs: Int get() = if (focusLeadMs > 0) focusLeadMs else 0
 
     /**
