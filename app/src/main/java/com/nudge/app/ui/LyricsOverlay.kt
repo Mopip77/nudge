@@ -105,7 +105,7 @@ private val LINE_HEIGHT = LyricRowData.LINE_HEIGHT_DP.dp
  * 统一字号顺带消掉了一串因放大衍生的补偿逻辑——排版宽度反向收窄、
  * 当前行行高补足、scale 与 blur 的顺序约束，都不再需要。
  */
-private val FONT_SIZE = 24.sp
+private val FONT_SIZE = 27.sp
 
 /**
  * 译文字号，比原文小一档。
@@ -113,6 +113,10 @@ private val FONT_SIZE = 24.sp
  * 小一号是为了让译文明确从属于原文而不与之争焦点（对齐 Apple Music）。
  * 不另降透明度：Row 是动画的原子单位，原文与译文共享同一个 alpha，
  * 再单独压暗译文会让远处的行叠乘到几乎看不见，而那时原文还读得清。
+ *
+ * 原文放大到 27sp 时**这里刻意不跟着放大**：比值从 0.71 收到 0.63，
+ * 才落进 Apple Music 的 0.6~0.65。早先两者太接近，「从属」只是写在
+ * 注释里的意图，视觉上并没有真的做到。
  */
 private val TRANSLATION_FONT_SIZE = 17.sp
 

@@ -56,8 +56,17 @@ data class LyricRowData(
          * 这三个常量必须与 `LyricsOverlay` 里的渲染值保持一致——它们描述的是
          * 同一套排版。分开写是因为锚点计算要在**纯 Kotlin** 侧可单测
          * （`Dp` 是 Android 类型），与 `LyricsAnimSpec` 用 Float 表示 dp 同理。
+         *
+         * 58 = 字号 27sp × 行高倍率 1.3（35.1）+ 排版余量，与早先
+         * 24sp / 52dp 的比例一致。**字号一改这里必须跟着改**，
+         * 否则大字被上下行挤掉。
+         *
+         * 连带影响：锚点按标称高度累加，行高涨 6dp 会让焦点下沉
+         * 3×6=18dp（约三分之一行）。这是已知且接受的——补偿它需要
+         * 一个 dp 级的偏移量参数，而 [anchorRow] 是整数行号，
+         * 提一行（58dp）又会补过头。
          */
-        const val LINE_HEIGHT_DP = 52f
+        const val LINE_HEIGHT_DP = 58f
 
         /** 原文与译文之间的间距。 */
         const val TRANSLATION_GAP_DP = 4f
