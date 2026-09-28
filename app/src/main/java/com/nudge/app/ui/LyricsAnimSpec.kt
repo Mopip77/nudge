@@ -101,6 +101,28 @@ data class LyricsAnimSpec(
     val blurRampLines: Float = 10f,
 
     /**
+     * 超过这个距离（行）的行**不再挂 blur**，纯性能优化。
+     *
+     * 每一个挂了 `Modifier.blur` 的行都要开一个**全屏宽的离屏缓冲**，
+     * 而渲染窗口有 17 行——真机实测这 17 个缓冲把 `issueDrawCommands`
+     * 拖到 6~11ms，96Hz 下预算才 10.4ms，于是 **24.6% 的帧掉帧**，
+     * 观感就是「滚动一卡一卡、像帧数不够」。关掉全部 blur 后掉帧率
+     * 降到 3.3%、90 分位 30ms→13ms，确认瓶颈就在这里。
+     *
+     * 取 8 是因为**从 offset=8 起 alpha 已经撞到 [alphaFar] 的地板**
+     * （0.55 起、每行降 0.035，第 8 行正好到 0.3），blur 也接近
+     * [maxBlurDp] 的封顶。再往远，各行的 alpha 与 blur 都不再变化，
+     * 彼此之间**没有任何层次差别**，那里的 blur 不承担任何表达，
+     * 却每行都要一个离屏缓冲。
+     *
+     * 叠加边缘淡出（`EDGE_FADE_RATIO`）后，那几行本身还要再被蒙版
+     * 擦掉一截，就更看不出来了。
+     *
+     * 设为 0 或负数表示不截断（全部挂 blur），供实验室对比用。
+     */
+    val blurCutoffLines: Int = 8,
+
+    /**
      * 模糊／透明度在当前行**上方**的跨度倍率。
      *
      * 1f 表示上下对称，即与前一版一致。小于 1 会让上方的行更快糊掉、
@@ -189,9 +211,15 @@ data class LyricsAnimSpec(
      * 距当前行 [offset] 行处的模糊半径（dp）。[offset] 为负表示在当前行上方。
      *
      * 当前行恒为 0：它是阅读焦点，任何模糊都是倒扣分。
+     *
+     * 超出 [blurCutoffLines] 的行也返回 0，**这是性能优化而非观感选择**：
+     * 渲染侧对半径 0 的行不挂 `Modifier.blur`，于是省掉一个全屏宽的
+     * 离屏缓冲。那个距离上 alpha 早已撞到 [alphaFar] 的地板、blur 也
+     * 接近封顶，各行之间本来就没有层次差别（详见 [blurCutoffLines]）。
      */
     fun blurDpAt(offset: Int): Float {
         if (offset == 0) return 0f
+        if (blurCutoffLines > 0 && kotlin.math.abs(offset) > blurCutoffLines) return 0f
         val ramp = if (offset < 0) blurRampLines * upperFadeScale else blurRampLines
         if (ramp <= 0f) return maxBlurDp
         return maxBlurDp * (kotlin.math.abs(offset) / ramp).coerceIn(0f, 1f)

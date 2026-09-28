@@ -137,10 +137,53 @@ class LyricsAnimSpecTest {
     }
 
     @Test
-    fun `模糊随距离单调不减并封顶在峰值`() {
-        val values = (0..20).map { spec.blurDpAt(it) }
+    fun `模糊在截断距离内随距离单调不减并封顶在峰值`() {
+        // 只看截断距离以内：超出的行不挂 blur（返回 0），那是性能优化，
+        // 见「超出截断距离的行不挂模糊」那条。
+        val values = (0..spec.blurCutoffLines).map { spec.blurDpAt(it) }
         values.zipWithNext { a, b -> assertTrue("模糊反而变小了：$a -> $b", b >= a) }
-        assertEquals(spec.maxBlurDp, spec.blurDpAt(30), 0.001f)
+
+        // 不截断时才谈得上「远处封顶在峰值」
+        val noCutoff = spec.copy(blurCutoffLines = 0)
+        assertEquals(noCutoff.maxBlurDp, noCutoff.blurDpAt(30), 0.001f)
+    }
+
+    @Test
+    fun `超出截断距离的行不挂模糊`() {
+        // 纯性能优化：每个挂 blur 的行都要一个全屏宽的离屏缓冲，
+        // 而渲染窗口有 17 行。真机实测 17 个缓冲把 issueDrawCommands
+        // 拖到 6~11ms（96Hz 预算 10.4ms），24.6% 的帧掉帧，
+        // 观感就是「滚动一卡一卡、像帧数不够」。
+        assertTrue("截断距离内应当有模糊", spec.blurDpAt(spec.blurCutoffLines) > 0f)
+        assertEquals(
+            "超出截断距离仍在挂 blur，离屏缓冲省不下来",
+            0f,
+            spec.blurDpAt(spec.blurCutoffLines + 1),
+            0.001f,
+        )
+        // 上方同理，截断是按绝对距离算的
+        assertEquals(0f, spec.blurDpAt(-(spec.blurCutoffLines + 1)), 0.001f)
+    }
+
+    @Test
+    fun `截断距离处 alpha 已到地板，截掉模糊看不出层次差别`() {
+        // 这是取 blurCutoffLines=8 的依据：从那里起 alpha 恒为 alphaFar，
+        // 各行之间本来就没有层次差别，blur 不承担任何表达。
+        // 若将来调了 alphaNear/alphaStep 让地板来得更晚，这条会拦住，
+        // 提示截断距离要跟着往后挪。
+        assertEquals(
+            "截断距离处 alpha 还没到地板，此处截掉模糊会丢掉可见的层次",
+            spec.alphaFar,
+            spec.alphaAt(spec.blurCutoffLines, false),
+            0.01f,
+        )
+    }
+
+    @Test
+    fun `截断可以关闭`() {
+        // 设 0 表示全部挂 blur，供实验室对比用
+        val noCutoff = spec.copy(blurCutoffLines = 0)
+        assertTrue(noCutoff.blurDpAt(50) > 0f)
     }
 
     @Test
