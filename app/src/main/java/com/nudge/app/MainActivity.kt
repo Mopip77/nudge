@@ -282,6 +282,9 @@ class MainActivity : ComponentActivity() {
                             onLyricsEnabledChange = {
                                 scope.launch { configStore.setLyricsEnabled(it) }
                             },
+                            onLyricsTranslationChange = {
+                                scope.launch { configStore.setLyricsTranslationEnabled(it) }
+                            },
                             onLyricsAlignmentChange = {
                                 scope.launch { configStore.setLyricsAlignment(it) }
                             },

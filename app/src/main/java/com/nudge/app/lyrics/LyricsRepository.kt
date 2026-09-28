@@ -26,7 +26,10 @@ object LyricsRepository {
         val raw = LyricsFetcher.fetchLrc(mediaId)
             ?: return@withContext LyricsState.Unavailable
 
-        val lines = LrcParser.parse(raw)
+        // 译文恒挂载（有就挂），**显不显示由渲染侧的开关决定**。
+        // 不在这里按配置过滤：那会让开关的切换需要重新联网，
+        // 而译文的字节已经跟原文一起拿回来了，不存在额外成本。
+        val lines = LrcParser.parseWithTranslation(raw.lrc, raw.tlyric)
         // 纯音乐的歌词字段可能只有元信息行，解析后为空
         if (lines.isEmpty()) LyricsState.Unavailable else LyricsState.Loaded(lines)
     }

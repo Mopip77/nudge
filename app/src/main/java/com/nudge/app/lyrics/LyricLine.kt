@@ -3,9 +3,18 @@ package com.nudge.app.lyrics
 /**
  * 一行歌词。[timeMs] 是这行开始演唱的时刻（相对歌曲开头）。
  *
+ * [translation] 是中文译文，**可空**：网易云的译文按行给，实测普遍比原文
+ * 少一两行（纯语气词、重复副歌往往不译），所以「这一行没有译文」是常态
+ * 而非异常。渲染侧据此决定行高（见 `LyricsOverlay` 的 Row 抽象），
+ * null 时该行只有原文、高度自然变矮。
+ *
  * 刻意不含 Android 依赖：解析与查找的边界条件多，必须能在 JVM 上单测。
  */
-data class LyricLine(val timeMs: Long, val text: String)
+data class LyricLine(
+    val timeMs: Long,
+    val text: String,
+    val translation: String? = null,
+)
 
 /**
  * 当前时刻应高亮的行索引，无则 -1。

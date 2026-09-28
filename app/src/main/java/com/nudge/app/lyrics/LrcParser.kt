@@ -15,6 +15,39 @@ object LrcParser {
      */
     private val TIME_TAG = Regex("""\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?]""")
 
+    /**
+     * 解析原文并挂上译文。[tlyric] 为 null／空时退化为 [parse]。
+     *
+     * **按时间戳匹配，绝不能按下标 zip**：两边行数普遍不等。真机实测
+     * 网易云同一首《Yesterday》的四个版本，原文/译文行数分别是
+     * 18/17、20/18、27/26、17/18——译文多数时候少一两行（纯语气词、
+     * 重复的副歌往往不译），**偶尔还会多**（末位 17/18 那个）。
+     * 按下标对齐会从第一个缺口起整体错位，把译文挂到后面的句子上，
+     * 而这在界面上看着「像是翻译得不太准」，不会被认成缺陷。
+     *
+     * 匹配用**精确相等**而非就近容差：两边同源于网易云同一份时间轴，
+     * 实测严格对齐。引入容差反而会在间奏附近误匹配到相邻句——
+     * 那里原文的空行已被 [parse] 丢弃，最近的时间戳可能隔着好几秒。
+     *
+     * 译文里匹配不到原文的行直接丢弃：它们没有原文可挂靠。
+     */
+    fun parseWithTranslation(lrc: String, tlyric: String?): List<LyricLine> {
+        val lines = parse(lrc)
+        if (tlyric.isNullOrBlank()) return lines
+
+        // 一行多时间戳被 parse 展开成多行，同一 timeMs 理论上只有一条；
+        // 真出现重复取最后一条即可（associateBy 的语义），不影响正确性。
+        val translations = parse(tlyric).associate { it.timeMs to it.text }
+        if (translations.isEmpty()) return lines
+
+        return lines.map { line ->
+            // 译文与原文完全相同时不挂：网易云对不需要翻译的行（如英文歌名、
+            // 拟声词）有时会原样回填一份，显示出来就是同一句话印两遍。
+            val translated = translations[line.timeMs]?.takeIf { it != line.text }
+            if (translated == null) line else line.copy(translation = translated)
+        }
+    }
+
     fun parse(raw: String): List<LyricLine> {
         val result = mutableListOf<LyricLine>()
 

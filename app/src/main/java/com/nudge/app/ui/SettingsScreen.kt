@@ -56,6 +56,7 @@ fun SettingsScreen(
     onSensitivityChange: (Sensitivity) -> Unit,
     onThemeChange: (ThemeMode) -> Unit,
     onLyricsEnabledChange: (Boolean) -> Unit,
+    onLyricsTranslationChange: (Boolean) -> Unit,
     onLyricsAlignmentChange: (LyricsAlignment) -> Unit,
     onDisplayModeChange: (DisplayMode) -> Unit,
     onAntiMistouchChange: (Boolean) -> Unit,
@@ -172,6 +173,17 @@ fun SettingsScreen(
             selected = config.lyricsEnabled,
             multiSelect = true,
             onClick = { onLyricsEnabledChange(!config.lyricsEnabled) },
+        )
+        // 译文从属于歌词，所以紧跟在「显示歌词」之后。
+        // hint 里说明「很多歌没有译文」：否则用户开了却在中文歌上看不到变化，
+        // 会以为开关坏了——大量歌曲没有译文是常态而非异常。
+        OptionRow(
+            label = "显示译文",
+            hint = "在原文下方用小字显示中文译文。许多歌曲没有译文（中文歌通常不需要），" +
+                "那些歌上开关没有可见效果",
+            selected = config.lyricsTranslationEnabled,
+            multiSelect = true,
+            onClick = { onLyricsTranslationChange(!config.lyricsTranslationEnabled) },
         )
         LyricsAlignment.entries.forEach { a ->
             OptionRow(

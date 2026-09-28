@@ -47,17 +47,30 @@ import kotlin.math.roundToInt
  * 要等副歌，试一组参数就得等半分钟。这里几行短句配一行长到必然折行的，
  * 是因为折行是动画里最容易露馅的场景（行高不一，位移累加一旦算错就飘）。
  */
-private val SAMPLE_LINES = listOf(
-    "夜色渐浓 风穿过窗",
-    "我把心事折进纸飞机",
-    "你说过的话还留在原地",
-    "这一句故意写得很长很长 好让它折成两行 看看换行时位移会不会算歪",
-    "街灯一盏一盏亮起来",
-    "像谁在数着回家的路",
-    "别回头",
-    "有些告别不必说出口",
-    "时间会替我们收好",
-    "所有来不及讲完的以后",
+/**
+ * 假歌词样本（自造文本，非任何真实歌曲）。
+ *
+ * 刻意混着有译文和没译文的行：真实的网易云译文普遍比原文少一两行
+ * （纯语气词、重复副歌往往不译），而**行高不统一**正是锚点计算最容易
+ * 出错的地方。全都有译文的样本测不出这条。
+ *
+ * 其中一句故意写得很长，用来验证折行；另有一句的译文很长，
+ * 因为中文译文往往比英文原文字数多，译文自己折行是真实场景。
+ */
+private val SAMPLE_ROWS = listOf(
+    LyricRowData("夜色渐浓 风穿过窗", "Night thickens, wind through the window"),
+    LyricRowData("我把心事折进纸飞机", "I fold my thoughts into a paper plane"),
+    LyricRowData("你说过的话还留在原地"),
+    LyricRowData(
+        "这一句故意写得很长很长 好让它折成两行 看看换行时位移会不会算歪",
+        "这一句的译文同样写得很长很长 用来验证译文自己折行时行高还准不准",
+    ),
+    LyricRowData("街灯一盏一盏亮起来", "Street lamps light up one by one"),
+    LyricRowData("像谁在数着回家的路"),
+    LyricRowData("别回头", "Don't look back"),
+    LyricRowData("有些告别不必说出口"),
+    LyricRowData("时间会替我们收好", "Time will keep them for us"),
+    LyricRowData("所有来不及讲完的以后", "All the afters we never finished saying"),
 )
 
 /** 换行间隔的可调范围（毫秒）。下限 800ms 模拟快歌的连续换行。 */
@@ -114,6 +127,9 @@ fun LyricsLabScreen(onBack: () -> Unit) {
     var intervalMs by remember { mutableStateOf(2400f) }
     var currentIndex by remember { mutableIntStateOf(0) }
     var alignment by remember { mutableStateOf(LyricsAlignment.CENTER) }
+    // 译文显隐在实验室里是本地状态，**不写回 NudgeConfig**：这里是取景器，
+    // 调的是观感参数，不该顺手改用户的真实配置。真实开关在设置页。
+    var showTranslation by remember { mutableStateOf(true) }
     var snapshot by remember { mutableStateOf<String?>(null) }
 
     // 自动换行。key 带 intervalMs，拖动滑块会重启循环，新节奏立刻生效
@@ -121,7 +137,7 @@ fun LyricsLabScreen(onBack: () -> Unit) {
     LaunchedEffect(intervalMs) {
         while (true) {
             delay(intervalMs.toLong())
-            currentIndex = (currentIndex + 1) % SAMPLE_LINES.size
+            currentIndex = (currentIndex + 1) % SAMPLE_ROWS.size
         }
     }
 
@@ -159,7 +175,9 @@ fun LyricsLabScreen(onBack: () -> Unit) {
                 .background(MaterialTheme.colorScheme.surfaceVariant)
         ) {
             LyricsScroller(
-                lines = SAMPLE_LINES,
+                rows = if (showTranslation) SAMPLE_ROWS else SAMPLE_ROWS.map {
+                    it.copy(translation = null)
+                },
                 currentIndex = currentIndex,
                 alignment = alignment,
                 spec = spec,
@@ -191,13 +209,19 @@ fun LyricsLabScreen(onBack: () -> Unit) {
                 onChange = { v -> updateSpec { it.copy(settleTweenMs = v.roundToInt()) } },
             )
             LabSlider(
-                label = "淡入淡出延迟",
-                value = spec.fadeDelayMs.toFloat(),
-                range = 0f..600f,
-                display = "${spec.fadeDelayMs}ms",
-                hint = "等位移基本走完再开始对焦。设 0 就是「边移动边对焦」，" +
-                    "两件事挤在一起会显得急。略小于当前行落定时间最顺",
-                onChange = { v -> updateSpec { it.copy(fadeDelayMs = v.roundToInt()) } },
+                label = "焦点时序偏移",
+                value = spec.focusLeadMs.toFloat(),
+                // 负到正贯通，让整个时序空间能连着扫过来——这块栽过四次的
+                // 教训就是端点数字看着都没问题，只有连续对比才分得出来。
+                range = -500f..400f,
+                display = when {
+                    spec.focusLeadMs > 0 -> "焦点先行 ${spec.focusLeadMs}ms"
+                    spec.focusLeadMs < 0 -> "位移先行 ${-spec.focusLeadMs}ms"
+                    else -> "同时开始"
+                },
+                hint = "正数＝先高亮再滚动（Apple Music 的时序，默认）；" +
+                    "负数＝先滚动再对焦（早先的口径）；0＝边移动边对焦，实测最急",
+                onChange = { v -> updateSpec { it.copy(focusLeadMs = v.roundToInt()) } },
             )
             LabSlider(
                 label = "淡入淡出时长",
@@ -215,47 +239,92 @@ fun LyricsLabScreen(onBack: () -> Unit) {
                 range = 0f..6f,
                 steps = 5,
                 display = "第 ${spec.anchorRow + 1} 行",
-                hint = "上方留 ${spec.anchorRow} 行已唱过的做上下文，其余是预读区",
+                // 点明这是不带译文时的基准：预览用的 SAMPLE_ROWS 混了带译文的行，
+                // 实际锚点会自动提一行（见 LyricsAnimSpec.anchorRowFor），
+                // 不说明的话会以为滑块调了没生效。
+                hint = "上方留 ${spec.anchorRow} 行已唱过的做上下文，其余是预读区。" +
+                    "这是无译文时的基准，有译文时自动提到第 ${spec.anchorRowFor(true) + 1} 行",
                 onChange = { v -> updateSpec { it.copy(anchorRow = v.roundToInt()) } },
             )
 
-            SectionTitle("缓动梯度（拖尾自上而下递增）")
+            // 四个控制点全部可调。早先只开放第一个点的 x，另外三个写死成
+            // (_, 0, 0.25, 1)——那是逐行梯度时代的形状，错峰删掉后它反而
+            // 成了「直愣愣」的根源（y1=0 起步零速度、x2=0.25 尾巴又长又平）。
+            // 详见 LyricsAnimSpec.easeX1 的注释。
+            SectionTitle("缓动曲线（整列同速）")
+            CurvePresets(onPick = { p ->
+                updateSpec {
+                    it.copy(easeX1 = p.x1, easeY1 = p.y1, easeX2 = p.x2, easeY2 = p.y2)
+                }
+            })
             LabSlider(
-                label = "顶部懒惰度（第 1 行）",
-                value = spec.easeTop,
+                label = "起点控制点 x₁",
+                value = spec.easeX1,
                 range = 0f..1f,
-                display = fmt(spec.easeTop),
-                hint = "0 = 起步就全速（最干脆）。最上面那行是这趟位移的终点，" +
-                    "该最先到位，所以取小值",
-                onChange = { v -> updateSpec { it.copy(easeTop = v) } },
+                display = fmt(spec.easeX1),
+                hint = "越小起步越快。与 y₁ 一起决定「吸附」有多急",
+                onChange = { v -> updateSpec { it.copy(easeX1 = v) } },
             )
             LabSlider(
-                label = "底部懒惰度（最下一行）",
-                value = spec.easeBottom,
+                label = "起点控制点 y₁",
+                value = spec.easeY1,
+                range = 0f..1.4f,
+                display = fmt(spec.easeY1),
+                hint = "1 = 起步就带速度（ease-out 族，吸附感来源）；" +
+                    "0 = 起步零速度，先平一下再走，正是「直愣愣」的那一版。" +
+                    "超过 1 会过冲（位移越过目标再回落），盲操下会被读成「歌词跳了」",
+                onChange = { v -> updateSpec { it.copy(easeY1 = v) } },
+            )
+            LabSlider(
+                label = "终点控制点 x₂",
+                value = spec.easeX2,
                 range = 0f..1f,
-                display = fmt(spec.easeBottom),
-                hint = "越大起步越慢、后段越赶，「被拖着走」越明显。" +
-                    "与顶部的差要够大，否则相邻行差太小，肉眼会合成一个刚体",
-                onChange = { v -> updateSpec { it.copy(easeBottom = v) } },
+                display = fmt(spec.easeX2),
+                hint = "越小越早逼近终点、尾巴越长越平。0.25 那版在 ¼ 时刻就走了 62%，" +
+                    "剩下四分之三时间磨最后 13%，所以显得前冲后停",
+                onChange = { v -> updateSpec { it.copy(easeX2 = v) } },
             )
             LabSlider(
-                label = "梯度跨度",
-                value = spec.gradientRampLines,
-                range = 1f..14f,
-                display = "${fmt(spec.gradientRampLines)} 行",
-                hint = "从屏幕顶边往下数，超出后统一取底部档（最懒）。" +
-                    "太窄则梯度早早跑完、下面一坨一起动；太开则相邻行差太小",
-                onChange = { v -> updateSpec { it.copy(gradientRampLines = v) } },
+                label = "终点控制点 y₂",
+                value = spec.easeY2,
+                range = 0f..1.4f,
+                display = fmt(spec.easeY2),
+                hint = "通常保持 1（在终点处速度归零，收得软）。小于 1 会让最后一下顿住",
+                onChange = { v -> updateSpec { it.copy(easeY2 = v) } },
             )
-            GradientTable(spec)
+            CurveTable(spec)
 
             SectionTitle("清晰度")
             LabSlider(
-                label = "最大模糊",
+                label = "统一模糊（两档模型）",
+                value = spec.uniformBlurDp,
+                // 下限取 -1 表示切回逐行渐进的旧模型，便于 A/B
+                range = -1f..14f,
+                display = if (spec.uniformBlurDp < 0f) {
+                    "关（用逐行渐进）"
+                } else {
+                    "${fmt(spec.uniformBlurDp)}dp"
+                },
+                hint = "非当前行统一这一档，与距离无关（Apple Music 的形态）。" +
+                    "**流畅度的主要杠杆**：半径只有一种，Skia 才谈得上复用。" +
+                    "拖到最左切回旧的逐行渐进模型对比",
+                onChange = { v -> updateSpec { it.copy(uniformBlurDp = v) } },
+            )
+            LabSlider(
+                label = "当前行模糊",
+                value = spec.currentBlurDp,
+                range = 0f..3f,
+                display = "${fmt(spec.currentBlurDp)}dp",
+                hint = "Apple Music 的当前行并非纯锐利，边缘带一点柔光。" +
+                    "0 最省（少一个离屏缓冲）",
+                onChange = { v -> updateSpec { it.copy(currentBlurDp = v) } },
+            )
+            LabSlider(
+                label = "最大模糊（仅旧模型）",
                 value = spec.maxBlurDp,
                 range = 0f..20f,
                 display = "${fmt(spec.maxBlurDp)}dp",
-                hint = "峰值要守住「最远处仍认得出字」",
+                hint = "峰值要守住「最远处仍认得出字」。统一模糊开启时本项不生效",
                 onChange = { v -> updateSpec { it.copy(maxBlurDp = v) } },
             )
             LabSlider(
@@ -265,6 +334,19 @@ fun LyricsLabScreen(onBack: () -> Unit) {
                 display = "${fmt(spec.blurRampLines)} 行",
                 hint = "与峰值配着调，决定观感的是斜率不只是峰值",
                 onChange = { v -> updateSpec { it.copy(blurRampLines = v) } },
+            )
+            LabSlider(
+                label = "模糊行数上限",
+                value = spec.blurCutoffLines.toFloat(),
+                range = 0f..17f,
+                display = if (spec.blurCutoffLines <= 0) {
+                    "不限（全部挂）"
+                } else {
+                    "${spec.blurCutoffLines} 行"
+                },
+                hint = "性能杠杆：每个挂 blur 的行都要一个全屏离屏缓冲。" +
+                    "拖到 0 看观感上界，往小拖看流畅度换来多少",
+                onChange = { v -> updateSpec { it.copy(blurCutoffLines = v.roundToInt()) } },
             )
             LabSlider(
                 label = "上方跨度倍率",
@@ -314,6 +396,11 @@ fun LyricsLabScreen(onBack: () -> Unit) {
                 ) {
                     Text("对齐：${alignment.displayName}")
                 }
+                // 译文这一项只切预览，不进 spec：它不是动画参数，
+                // 所以也不该点亮 LAB 角标（角标的语义是「跑着实验室的动画参数」）。
+                TextButton(onClick = { showTranslation = !showTranslation }) {
+                    Text("译文：${if (showTranslation) "开" else "关"}")
+                }
                 // 不走 updateSpec：这里要的恰恰相反，是把 touched 清掉。
                 // clear() 与 touched=false 必须成对——前者让主界面回到默认值，
                 // 后者既熄灭角标，又阻止上面那个 effect 立刻把覆盖 set 回去。
@@ -345,51 +432,76 @@ fun LyricsLabScreen(onBack: () -> Unit) {
 }
 
 /**
- * 逐行列出缓动参数与进度采样。
+ * 几条常用曲线的快捷入口。
  *
- * 加这张表是因为在这上面栽过几次，每次都是「看端点数字觉得没问题」：
+ * 四个滑块能扫遍整个空间，但**盲扫四维找不到好点**——标准缓动曲线是
+ * 前人挑过的，先跳到附近再微调比从零拖快得多。名字用通行叫法，
+ * 方便与设计资料对照。
  *
- * - 40→260 / 0.58→1 那组看着「有梯度」，实际上整个阅读区的阻尼都近临界，
- *   刚度相邻只差 27（肉眼合成刚体），于是整列就是线性滚动。
- * - 之后那组方向整个写反了：最上面那行最软最晃，而它本该是最先落定的。
- * - 再之后是弹簧本身的问题——速度峰值在极早期，观感是「往上拱一下」。
- *
- * 所以要把逐行的值摊开，一眼能看出**梯度朝哪个方向**、**相邻行差得够不够**。
- * 进度采样（25%/50% 时刻走了多少）比端点数字更能反映实际观感。
+ * 「旧（直愣愣）」那一档是刻意留的：调参全靠肉眼比对，没有一个能
+ * 随时跳回去的参照物，就分不清「这次是真变好了还是错觉」。
+ * 这与主界面那个 LAB 角标是同一个用途。
  */
 @Composable
-private fun GradientTable(spec: LyricsAnimSpec) {
+private fun CurvePresets(onPick: (LyricsAnimSpec.CubicPoints) -> Unit) {
+    val presets = listOf(
+        "easeOutQuint" to LyricsAnimSpec.CubicPoints(0.22f, 1f, 0.36f, 1f),
+        "easeOutExpo" to LyricsAnimSpec.CubicPoints(0.16f, 1f, 0.3f, 1f),
+        "easeOutCubic" to LyricsAnimSpec.CubicPoints(0.33f, 1f, 0.68f, 1f),
+        "Material 标准" to LyricsAnimSpec.CubicPoints(0.2f, 0f, 0f, 1f),
+        "旧（直愣愣）" to LyricsAnimSpec.CubicPoints(0.1f, 0f, 0.25f, 1f),
+    )
+    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 4.dp)) {
+        presets.chunked(3).forEach { rowItems ->
+            Row(modifier = Modifier.fillMaxWidth()) {
+                rowItems.forEach { (name, pts) ->
+                    TextButton(onClick = { onPick(pts) }) {
+                        Text(name, fontSize = 12.sp)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 把整列那条缓动曲线的进度采样打出来。
+ *
+ * 早先这是一张**逐行**梯度表，因为那时每行的曲线都不同，在这上面栽过几次，
+ * 每次都是「看端点数字觉得没问题」：有一组看着有梯度、实际相邻行差太小，
+ * 肉眼合成刚体成了线性滚动；另一组方向整个写反，最上面那行最晃而它本该
+ * 最先落定。所以当初要把逐行的值摊开看。
+ *
+ * 现在整列共用一条曲线（见 LyricsAnimSpec.blockEase），逐行摊开已无意义，
+ * 但**进度采样仍然有用**：「¼ 时刻走了多少」比端点数字更能反映
+ * 「先快后慢」到底有多快——吸附感强不强全看前段那一截。
+ */
+@Composable
+private fun CurveTable(spec: LyricsAnimSpec) {
+    val e = spec.blockEase
+    // 直接采样渲染侧真正在用的那条曲线，不另算近似值，
+    // 否则表里的数字和屏幕上跑的不是一回事，调参就是瞎调。
+    // 夹取规则要与 LyricsOverlay.easingFor 完全一致（x 夹、y 不夹）。
+    val easing = CubicBezierEasing(e.x1.coerceIn(0f, 1f), e.y1, e.x2.coerceIn(0f, 1f), e.y2)
     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp)) {
         Text(
-            text = "屏幕行  懒惰度   ¼时走了  ½时走了",
+            text = "时刻    ¼      ½      ¾",
             fontSize = 11.sp,
             fontFamily = FontFamily.Monospace,
             color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
         )
-        (0..8).forEach { row ->
-            val e = spec.easeAt(row)
-            // 直接采样这一行实际会用的那条曲线，而不是另算一个近似值——
-            // 表里的数字必须和屏幕上跑的是同一条曲线，否则调参就是瞎调。
-            val easing = CubicBezierEasing(e.coerceIn(0f, 1f), 0f, 0.25f, 1f)
-            val isAnchor = row == spec.anchorRow
-            Text(
-                text = "%4d  %7.2f  %6.0f%%  %6.0f%%%s".format(
-                    row, e,
-                    easing.transform(0.25f) * 100f,
-                    easing.transform(0.5f) * 100f,
-                    if (isAnchor) "  ← 当前行" else "",
-                ),
-                fontSize = 11.sp,
-                fontFamily = FontFamily.Monospace,
-                color = if (isAnchor) {
-                    MaterialTheme.colorScheme.primary
-                } else {
-                    MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f)
-                },
-            )
-        }
         Text(
-            text = "所有行 ${spec.settleTweenMs}ms 同时结束；越往下越晚发力",
+            text = "走了  %5.0f%%  %5.0f%%  %5.0f%%".format(
+                easing.transform(0.25f) * 100f,
+                easing.transform(0.5f) * 100f,
+                easing.transform(0.75f) * 100f,
+            ),
+            fontSize = 11.sp,
+            fontFamily = FontFamily.Monospace,
+            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
+        )
+        Text(
+            text = "整列同速，${spec.settleTweenMs}ms 走完。¼ 时刻走得越多，吸附感越强",
             fontSize = 10.sp,
             color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.45f),
             modifier = Modifier.padding(top = 4.dp),
@@ -456,16 +568,20 @@ private fun fmt(v: Float): String =
  */
 private fun LyricsAnimSpec.toSourceSnippet(): String = buildString {
     appendLine("anchorRow = $anchorRow,")
-    appendLine("easeTop = ${fmt(easeTop)}f,")
-    appendLine("easeBottom = ${fmt(easeBottom)}f,")
-    appendLine("gradientRampLines = ${fmt(gradientRampLines)}f,")
+    appendLine("easeX1 = ${fmt(easeX1)}f,")
+    appendLine("easeY1 = ${fmt(easeY1)}f,")
+    appendLine("easeX2 = ${fmt(easeX2)}f,")
+    appendLine("easeY2 = ${fmt(easeY2)}f,")
     appendLine("maxBlurDp = ${fmt(maxBlurDp)}f,")
+    appendLine("uniformBlurDp = ${fmt(uniformBlurDp)}f,")
+    appendLine("currentBlurDp = ${fmt(currentBlurDp)}f,")
     appendLine("blurRampLines = ${fmt(blurRampLines)}f,")
+    appendLine("blurCutoffLines = $blurCutoffLines,")
     appendLine("upperFadeScale = ${fmt(upperFadeScale)}f,")
     appendLine("alphaNear = ${fmt(alphaNear)}f,")
     appendLine("alphaFar = ${fmt(alphaFar)}f,")
     appendLine("alphaStep = ${fmt(alphaStep)}f,")
     appendLine("settleTweenMs = $settleTweenMs,")
     appendLine("fadeAnimMs = $fadeAnimMs,")
-    append("fadeDelayMs = $fadeDelayMs,")
+    append("focusLeadMs = $focusLeadMs,")
 }
