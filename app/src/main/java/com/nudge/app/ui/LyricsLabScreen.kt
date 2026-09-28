@@ -247,21 +247,50 @@ fun LyricsLabScreen(onBack: () -> Unit) {
                 onChange = { v -> updateSpec { it.copy(anchorRow = v.roundToInt()) } },
             )
 
-            // 只剩一个滑块：整列共用一条曲线，逐行梯度已经删掉了
-            // （两版错峰都实测无效，理由见 LyricsAnimSpec.blockEase）。
-            // 早先这里有「底部懒惰度」「梯度跨度」两个滑块和一张逐行梯度表，
-            // 它们现在都驱动不了任何东西——摆着只会让人以为调了有用，
-            // 与「灵敏度只在 debug 包可调」那条同一个口径：
-            // 没有效果的控件比没有控件更糟。
+            // 四个控制点全部可调。早先只开放第一个点的 x，另外三个写死成
+            // (_, 0, 0.25, 1)——那是逐行梯度时代的形状，错峰删掉后它反而
+            // 成了「直愣愣」的根源（y1=0 起步零速度、x2=0.25 尾巴又长又平）。
+            // 详见 LyricsAnimSpec.easeX1 的注释。
             SectionTitle("缓动曲线（整列同速）")
+            CurvePresets(onPick = { p ->
+                updateSpec {
+                    it.copy(easeX1 = p.x1, easeY1 = p.y1, easeX2 = p.x2, easeY2 = p.y2)
+                }
+            })
             LabSlider(
-                label = "懒惰度",
-                value = spec.easeTop,
+                label = "起点控制点 x₁",
+                value = spec.easeX1,
                 range = 0f..1f,
-                display = fmt(spec.easeTop),
-                hint = "贝塞尔第一个控制点的 x。0 = 起步就全速（最干脆的吸附感）；" +
-                    "越大起步越平、后段越赶，大到一定程度就是「先拱一下再走」的急",
-                onChange = { v -> updateSpec { it.copy(easeTop = v) } },
+                display = fmt(spec.easeX1),
+                hint = "越小起步越快。与 y₁ 一起决定「吸附」有多急",
+                onChange = { v -> updateSpec { it.copy(easeX1 = v) } },
+            )
+            LabSlider(
+                label = "起点控制点 y₁",
+                value = spec.easeY1,
+                range = 0f..1.4f,
+                display = fmt(spec.easeY1),
+                hint = "1 = 起步就带速度（ease-out 族，吸附感来源）；" +
+                    "0 = 起步零速度，先平一下再走，正是「直愣愣」的那一版。" +
+                    "超过 1 会过冲（位移越过目标再回落），盲操下会被读成「歌词跳了」",
+                onChange = { v -> updateSpec { it.copy(easeY1 = v) } },
+            )
+            LabSlider(
+                label = "终点控制点 x₂",
+                value = spec.easeX2,
+                range = 0f..1f,
+                display = fmt(spec.easeX2),
+                hint = "越小越早逼近终点、尾巴越长越平。0.25 那版在 ¼ 时刻就走了 62%，" +
+                    "剩下四分之三时间磨最后 13%，所以显得前冲后停",
+                onChange = { v -> updateSpec { it.copy(easeX2 = v) } },
+            )
+            LabSlider(
+                label = "终点控制点 y₂",
+                value = spec.easeY2,
+                range = 0f..1.4f,
+                display = fmt(spec.easeY2),
+                hint = "通常保持 1（在终点处速度归零，收得软）。小于 1 会让最后一下顿住",
+                onChange = { v -> updateSpec { it.copy(easeY2 = v) } },
             )
             CurveTable(spec)
 
@@ -403,6 +432,39 @@ fun LyricsLabScreen(onBack: () -> Unit) {
 }
 
 /**
+ * 几条常用曲线的快捷入口。
+ *
+ * 四个滑块能扫遍整个空间，但**盲扫四维找不到好点**——标准缓动曲线是
+ * 前人挑过的，先跳到附近再微调比从零拖快得多。名字用通行叫法，
+ * 方便与设计资料对照。
+ *
+ * 「旧（直愣愣）」那一档是刻意留的：调参全靠肉眼比对，没有一个能
+ * 随时跳回去的参照物，就分不清「这次是真变好了还是错觉」。
+ * 这与主界面那个 LAB 角标是同一个用途。
+ */
+@Composable
+private fun CurvePresets(onPick: (LyricsAnimSpec.CubicPoints) -> Unit) {
+    val presets = listOf(
+        "easeOutQuint" to LyricsAnimSpec.CubicPoints(0.22f, 1f, 0.36f, 1f),
+        "easeOutExpo" to LyricsAnimSpec.CubicPoints(0.16f, 1f, 0.3f, 1f),
+        "easeOutCubic" to LyricsAnimSpec.CubicPoints(0.33f, 1f, 0.68f, 1f),
+        "Material 标准" to LyricsAnimSpec.CubicPoints(0.2f, 0f, 0f, 1f),
+        "旧（直愣愣）" to LyricsAnimSpec.CubicPoints(0.1f, 0f, 0.25f, 1f),
+    )
+    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 4.dp)) {
+        presets.chunked(3).forEach { rowItems ->
+            Row(modifier = Modifier.fillMaxWidth()) {
+                rowItems.forEach { (name, pts) ->
+                    TextButton(onClick = { onPick(pts) }) {
+                        Text(name, fontSize = 12.sp)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
  * 把整列那条缓动曲线的进度采样打出来。
  *
  * 早先这是一张**逐行**梯度表，因为那时每行的曲线都不同，在这上面栽过几次，
@@ -419,7 +481,8 @@ private fun CurveTable(spec: LyricsAnimSpec) {
     val e = spec.blockEase
     // 直接采样渲染侧真正在用的那条曲线，不另算近似值，
     // 否则表里的数字和屏幕上跑的不是一回事，调参就是瞎调。
-    val easing = CubicBezierEasing(e.coerceIn(0f, 1f), 0f, 0.25f, 1f)
+    // 夹取规则要与 LyricsOverlay.easingFor 完全一致（x 夹、y 不夹）。
+    val easing = CubicBezierEasing(e.x1.coerceIn(0f, 1f), e.y1, e.x2.coerceIn(0f, 1f), e.y2)
     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp)) {
         Text(
             text = "时刻    ¼      ½      ¾",
@@ -505,7 +568,10 @@ private fun fmt(v: Float): String =
  */
 private fun LyricsAnimSpec.toSourceSnippet(): String = buildString {
     appendLine("anchorRow = $anchorRow,")
-    appendLine("easeTop = ${fmt(easeTop)}f,")
+    appendLine("easeX1 = ${fmt(easeX1)}f,")
+    appendLine("easeY1 = ${fmt(easeY1)}f,")
+    appendLine("easeX2 = ${fmt(easeX2)}f,")
+    appendLine("easeY2 = ${fmt(easeY2)}f,")
     appendLine("maxBlurDp = ${fmt(maxBlurDp)}f,")
     appendLine("uniformBlurDp = ${fmt(uniformBlurDp)}f,")
     appendLine("currentBlurDp = ${fmt(currentBlurDp)}f,")

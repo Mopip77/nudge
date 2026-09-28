@@ -57,26 +57,25 @@ import com.nudge.app.media.TrackInfo
 import kotlinx.coroutines.delay
 
 /**
- * 按「懒惰度」造一条缓动曲线。[ease] 越大起步越慢、后段越赶。
+ * 造整列位移那条缓动曲线，四个控制点全部由参数给（见 [LyricsAnimSpec.easeX1]）。
  *
- * 形状是 `cubic-bezier(ease, 0, 0.25, 1)`：
+ * 早先这里只接一个「懒惰度」，另外三个点写死成 `(_, 0, 0.25, 1)`。
+ * 那是逐行梯度时代的形状，错峰删掉后反而成了「直愣愣」的根源——
+ * y1=0 让起步有一段零速度，x2=0.25 让曲线在四分之一处就逼近终点、
+ * 后面拖一条又长又平的尾巴。理由详见 [LyricsAnimSpec.easeX1] 的注释。
  *
- * - 第一个控制点的 y 恒为 **0**，x 就是 [ease]。x 越大，曲线在起点附近
- *   越平——起步速度越慢，「被前面的行拖着走」的感觉越强。
- * - 第二个控制点固定 (0.25, 1)，让所有行都在同一时刻收尾、且收得很软，
- *   不会出现某一行最后一下突然顿住。
- *
- * **这条曲线单调不减，位移只会逼近目标、永不越过**。这正是与弹簧最本质的
- * 差别：弹簧是 PID 式的，快速拉到目标再来回震荡，越软的行震得越厉害；
- * 而这里要的是「趋近于 0」，各行只是趋近的快慢不同。震荡在盲操场景里
- * 尤其糟——焦点行晃一下会被读成「歌词跳了」。
+ * **曲线应当单调不减，位移只逼近目标、永不越过**。这是与弹簧最本质的
+ * 差别：弹簧是 PID 式的，快速拉到目标再来回震荡。震荡在盲操场景里尤其糟
+ * ——焦点行晃一下会被读成「歌词跳了」。
  *
  * 用 remember 缓存：CubicBezierEasing 会在内部做二分求解，
  * 每帧新建一个既浪费也让 Compose 误判参数变化。
  */
 @Composable
-private fun easingFor(ease: Float): Easing = remember(ease) {
-    CubicBezierEasing(ease.coerceIn(0f, 1f), 0f, 0.25f, 1f)
+private fun easingFor(p: LyricsAnimSpec.CubicPoints): Easing = remember(p) {
+    // x 必须夹在 [0,1]（贝塞尔的定义域），y 不夹：y 超过 1 就是过冲，
+    // 那是实验室里有意义的一档（虽然默认不用，见 easeY1 的注释）。
+    CubicBezierEasing(p.x1.coerceIn(0f, 1f), p.y1, p.x2.coerceIn(0f, 1f), p.y2)
 }
 
 /**

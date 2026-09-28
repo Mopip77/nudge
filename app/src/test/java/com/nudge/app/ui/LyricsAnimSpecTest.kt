@@ -26,13 +26,15 @@ class LyricsAnimSpecTest {
 
     /**
      * 复算 `LyricsOverlay.easingFor` 那条曲线，用来在纯 JVM 下验证单调性。
-     * 形状必须与那里一致：`cubic-bezier(ease, 0, 0.25, 1)`。
+     * 四个控制点全部来自 spec，与渲染侧是同一条曲线——
+     * 另算一个近似值的话，测试通过了也不代表屏幕上跑的那条是对的。
      */
-    private fun progressAt(ease: Float, t: Float): Float {
-        val x1 = ease.coerceIn(0f, 1f)
-        val x2 = 0.25f
+    private fun progressAt(p: LyricsAnimSpec.CubicPoints, t: Float): Float {
+        val x1 = p.x1.coerceIn(0f, 1f)
+        val x2 = p.x2.coerceIn(0f, 1f)
         fun bx(u: Float) = 3 * (1 - u) * (1 - u) * u * x1 + 3 * (1 - u) * u * u * x2 + u * u * u
-        fun by(u: Float) = 3 * (1 - u) * u * u * 1f + u * u * u
+        fun by(u: Float) =
+            3 * (1 - u) * (1 - u) * u * p.y1 + 3 * (1 - u) * u * u * p.y2 + u * u * u
         var lo = 0f
         var hi = 1f
         repeat(50) {
@@ -85,20 +87,44 @@ class LyricsAnimSpecTest {
     }
 
     @Test
-    fun `整列用最干脆的那一档，且是单一值`() {
-        // 懒惰度即贝塞尔第一个控制点的 x，**越大起步越平**。
-        // 整列取 easeTop（最小）才有「先快后慢」的吸附感；
-        // 取大的那端会变成「先拱一下再走」，正是用户反馈的「急」。
-        assertEquals(spec.easeTop, spec.blockEase, 0.0001f)
-
+    fun `整列共用一条曲线，取值不依赖行号`() {
         // blockEase 是个**不带参数**的值，这本身就是「整列同速」的保证——
         // 拿不到行号就不可能按行区分。这里试过两版错峰都实测无效后删掉了：
         // 逐行梯度让每行起步都慢；只让进场那行慢则因为歌词一直铺到屏幕
-        // 底部、那一行根本看不见。函数签名里**不该再出现 screenRow**，
+        // 底部、那一行根本看不见。签名里**不该再出现 screenRow**，
         // 这条测试拦着「将来又想加回第三版」。
-        assertTrue("blockEase 应在 [0,1] 内", spec.blockEase in 0f..1f)
-        assertTrue("blockEase 太大就没有吸附感了", spec.blockEase <= 0.4f)
+        assertEquals(spec.easeX1, spec.blockEase.x1, 0.0001f)
+        assertEquals(spec.easeY1, spec.blockEase.y1, 0.0001f)
+        assertEquals(spec.easeX2, spec.blockEase.x2, 0.0001f)
+        assertEquals(spec.easeY2, spec.blockEase.y2, 0.0001f)
     }
+
+    @Test
+    fun `默认是 ease-out 族：起步就带速度`() {
+        // y1 决定起点处的速度。**y1 = 0 会让曲线起点是平的**（有一段零速度），
+        // 那正是用户反馈「直愣愣」的那一版——它是逐行梯度时代为了做
+        // 「起步慢的拖尾」留下的，错峰删掉后就只剩副作用了。
+        assertTrue(
+            "y₁=${spec.easeY1} 太小，起步没速度，吸附感出不来",
+            spec.easeY1 >= 0.8f,
+        )
+        // 起步要快：¼ 时刻应当已经走掉一大半。
+        val quarter = progressAt(spec.blockEase, 0.25f)
+        assertTrue("¼ 时刻只走了 ${quarter * 100}%，起步太肉", quarter >= 0.5f)
+    }
+
+    // 刻意**没有**「后段衰减要够顺」那类断言。
+    //
+    // 写过一版（断言 ½→¾ 之间仍有 ≥3% 的推进），实算之后发现它把旧曲线
+    // (0.1,0,0.25,1) 判为合格（14.9%）、把更激进的 easeOutExpo 判为不合格
+    // （2.6%），与注释里写的意图正好相反——因为 ease-out 族本来就是
+    // 前段吃掉绝大部分位移、后段只剩零头，「后段推进少」是它的**特征**
+    // 而不是缺陷。
+    //
+    // 教训：「直愣愣」是个观感问题，落不到「某个时刻走了百分之多少」
+    // 这种单一判据上（旧曲线的分布其实比新的更均匀）。这一档只能靠
+    // 实验室肉眼比对，所以那里留了「旧（直愣愣）」预设做参照物。
+    // 别再凭直觉补一条看起来合理的数值断言。
 
     @Test
     fun `位移单调逼近，不越过目标`() {
