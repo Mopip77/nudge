@@ -104,6 +104,36 @@ class LyricsAnimSpecTest {
     }
 
     @Test
+    fun `高亮必须先淡完，位移才开始`() {
+        // 这是「先高亮 → 停一下 → 再移动」成立的**充要条件**，
+        // 而它是两个参数的**比例**关系，任何一个单独看都正常。
+        //
+        // 栽过一次：焦点先行 90ms 而淡入 260ms，延迟本身分毫不差地生效了
+        // （日志里 FOCUS→LAYOUT 恰好 90ms），但淡入要到 +278ms 才结束，
+        // 而位移 +165ms 就开始——后一半淡入与整段位移完全重叠，
+        // 观感就是「同时进行」。当时一直在查延迟有没有生效，方向就错了。
+        assertTrue(
+            "淡入 ${spec.fadeAnimMs}ms 不短于焦点先行 ${spec.focusLeadMs}ms，两段会重叠",
+            spec.fadeAnimMs < spec.focusLeadMs,
+        )
+        // 还要留出一段**两者都不动**的空档，那个「停一下」才看得见。
+        assertTrue(
+            "空档只有 ${spec.focusLeadMs - spec.fadeAnimMs}ms，太短读不出停顿",
+            spec.focusLeadMs - spec.fadeAnimMs >= 40,
+        )
+    }
+
+    @Test
+    fun `焦点先行不能长到把位移挤出换行间隔`() {
+        // 先行 + 位移时长要能在一次换行内跑完，否则快歌时位移会被
+        // 下一次换行打断，整列永远追不上。
+        assertTrue(
+            "先行 ${spec.focusLeadMs} + 位移 ${spec.settleTweenMs} 过长",
+            spec.focusLeadMs + spec.settleTweenMs <= 800,
+        )
+    }
+
+    @Test
     fun `可视区内所有行同速——整列是刚体`() {
         // 这是「先快后慢的吸附感」的前提：可视区内一旦各行不同速，
         // 它们会互相错开，整列显得散，观感就是「急」。
