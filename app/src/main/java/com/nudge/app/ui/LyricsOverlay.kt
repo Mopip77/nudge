@@ -476,6 +476,24 @@ private fun LyricRow(
         easing = rowEasing,
     )
 
+    // 窗口补偿**专用**的 spec，与 scrollSpec 的唯一差别是**不带延迟**。
+    //
+    // 这两条路径对延迟的需求是相反的，不能共用：
+    //
+    // - scrollSpec 走的是「从当前位置挪到新位置」，延迟它＝晚一点开始滚动，
+    //   正是焦点先行想要的。
+    // - shiftAnim 走的是「把一个**已经发生的排版跳变**收回来」。
+    //   pendingShift 在组合期同步生效、当帧就把整列推走了，若回收这一侧
+    //   还要等 90ms，那个跳变就会**裸露在屏幕上** 3~4 帧。
+    //
+    // 真机逐帧量到的就是这个：换行第 1 帧整列跳 76px，接着 3~4 帧完全静止
+    // （0px），然后才开始正常的加速-减速曲线。那段静止就是用户说的
+    // 「一卡一卡」，峰值/均值达到 5.7 倍（均匀滚动应接近 2）。
+    val shiftSpec = tween<Float>(
+        durationMillis = spec.settleTweenMs,
+        easing = rowEasing,
+    )
+
     // 窗口滑动的补偿量。
     //
     // targetOffsetY 只在歌曲开头随换行变化；一旦 windowStart 开始跟着
@@ -504,7 +522,9 @@ private fun LyricRow(
     LaunchedEffect(shiftEpoch) {
         if (pendingShift != 0f) {
             shiftAnim.snapTo(shiftAnim.value + pendingShift)
-            shiftAnim.animateTo(targetValue = 0f, animationSpec = scrollSpec)
+            // 用 shiftSpec（无延迟）而非 scrollSpec：回收必须立刻开始，
+            // 否则排版跳变会裸露在屏幕上。见 shiftSpec 处的注释。
+            shiftAnim.animateTo(targetValue = 0f, animationSpec = shiftSpec)
         }
     }
 
@@ -517,9 +537,12 @@ private fun LyricRow(
             offsetAnim.snapTo(targetOffsetY)
             settled = true
         } else {
-            // 与 shiftAnim 用同一个 scrollSpec。这条路径只在歌曲开头
-            // （窗口还没滑动）走，但两段的观感必须一致，
-            // 否则唱到第 6 行时手感会突然变一下。
+            // 与 shiftAnim 用**同一条缓动曲线、同一个时长**，只有延迟不同
+            // （见 shiftSpec）。这条路径只在歌曲开头（窗口还没滑动）走，
+            // 但两段的观感必须一致，否则唱到第 6 行时手感会突然变一下。
+            //
+            // 这里吃延迟是对的：它是真的「挪到新位置」，晚一点开始
+            // 正是焦点先行要的。shiftAnim 那边是回收已发生的跳变，不能等。
             offsetAnim.animateTo(targetOffsetY, animationSpec = scrollSpec)
         }
     }
