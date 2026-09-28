@@ -75,6 +75,17 @@ data class NudgeConfig(
     /** 关闭后既不显示歌词，也不发起歌词网络请求。 */
     val lyricsEnabled: Boolean,
     val lyricsAlignment: LyricsAlignment,
+    /**
+     * 是否在原文下方显示中文译文（小一号字）。
+     *
+     * **只管显隐，不管拉取**：译文与原文是同一个接口同一次请求拿回来的
+     * （请求参数 `tv=-1`），关掉只是不渲染，不省任何网络。所以切换它
+     * 无需重新联网，也不影响 [lyricsEnabled] 那条「关了就不请求」的口径。
+     *
+     * 默认开：大量歌曲本就没有译文（中文歌不需要，英文歌也不是都有），
+     * 开着在那些歌上完全无感；有译文时用户多半是想看的。
+     */
+    val lyricsTranslationEnabled: Boolean,
     /** 播放界面的视觉外壳，与 [lyricsEnabled] 正交。见 [DisplayMode]。 */
     val displayMode: DisplayMode,
     /**
@@ -111,6 +122,7 @@ data class NudgeConfig(
             themeMode = ThemeMode.SYSTEM,
             lyricsEnabled = true,
             lyricsAlignment = LyricsAlignment.CENTER,
+            lyricsTranslationEnabled = true,
             displayMode = DisplayMode.SIMPLE,
             antiMistouchEnabled = true,
         )
@@ -175,6 +187,8 @@ class ConfigStore(private val context: Context) {
             lyricsAlignment = prefs[LYRICS_ALIGNMENT_KEY]
                 ?.let { name -> LyricsAlignment.entries.firstOrNull { it.name == name } }
                 ?: NudgeConfig.DEFAULT.lyricsAlignment,
+            lyricsTranslationEnabled = prefs[LYRICS_TRANSLATION_KEY]
+                ?: NudgeConfig.DEFAULT.lyricsTranslationEnabled,
             displayMode = prefs[DISPLAY_MODE_KEY]
                 ?.let { name -> DisplayMode.entries.firstOrNull { it.name == name } }
                 ?: NudgeConfig.DEFAULT.displayMode,
@@ -218,6 +232,10 @@ class ConfigStore(private val context: Context) {
 
     suspend fun setLyricsAlignment(alignment: LyricsAlignment) {
         context.dataStore.edit { it[LYRICS_ALIGNMENT_KEY] = alignment.name }
+    }
+
+    suspend fun setLyricsTranslationEnabled(enabled: Boolean) {
+        context.dataStore.edit { it[LYRICS_TRANSLATION_KEY] = enabled }
     }
 
     suspend fun setDisplayMode(mode: DisplayMode) {
@@ -266,6 +284,7 @@ class ConfigStore(private val context: Context) {
             prefs[THEME_KEY] = config.themeMode.name
             prefs[LYRICS_ENABLED_KEY] = config.lyricsEnabled
             prefs[LYRICS_ALIGNMENT_KEY] = config.lyricsAlignment.name
+            prefs[LYRICS_TRANSLATION_KEY] = config.lyricsTranslationEnabled
             prefs[DISPLAY_MODE_KEY] = config.displayMode.name
             prefs[ANTI_MISTOUCH_KEY] = config.antiMistouchEnabled
         }
@@ -282,6 +301,7 @@ class ConfigStore(private val context: Context) {
         val THEME_KEY = stringPreferencesKey("theme_mode")
         val LYRICS_ENABLED_KEY = booleanPreferencesKey("lyrics_enabled")
         val LYRICS_ALIGNMENT_KEY = stringPreferencesKey("lyrics_alignment")
+        val LYRICS_TRANSLATION_KEY = booleanPreferencesKey("lyrics_translation_enabled")
         val DISPLAY_MODE_KEY = stringPreferencesKey("display_mode")
         // 刻意换新 key 而不沿用旧的 screen_pinning_enabled：旧值的语义是
         // 「是否固定屏幕」，与新的「是否启用整套防误触」不等价。把旧的 false

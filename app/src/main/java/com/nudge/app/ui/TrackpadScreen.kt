@@ -231,6 +231,7 @@ private fun BoxScope.ContentLayer(
             // debug 包里跟随实验室的实时调参，release 恒为默认值。
             // 见 LyricsAnimOverride：不落盘，杀进程即回默认。
             spec = LyricsAnimOverride.current,
+            showTranslation = config.lyricsTranslationEnabled,
             textColor = contentColor,
         )
     }

@@ -47,17 +47,30 @@ import kotlin.math.roundToInt
  * 要等副歌，试一组参数就得等半分钟。这里几行短句配一行长到必然折行的，
  * 是因为折行是动画里最容易露馅的场景（行高不一，位移累加一旦算错就飘）。
  */
-private val SAMPLE_LINES = listOf(
-    "夜色渐浓 风穿过窗",
-    "我把心事折进纸飞机",
-    "你说过的话还留在原地",
-    "这一句故意写得很长很长 好让它折成两行 看看换行时位移会不会算歪",
-    "街灯一盏一盏亮起来",
-    "像谁在数着回家的路",
-    "别回头",
-    "有些告别不必说出口",
-    "时间会替我们收好",
-    "所有来不及讲完的以后",
+/**
+ * 假歌词样本（自造文本，非任何真实歌曲）。
+ *
+ * 刻意混着有译文和没译文的行：真实的网易云译文普遍比原文少一两行
+ * （纯语气词、重复副歌往往不译），而**行高不统一**正是锚点计算最容易
+ * 出错的地方。全都有译文的样本测不出这条。
+ *
+ * 其中一句故意写得很长，用来验证折行；另有一句的译文很长，
+ * 因为中文译文往往比英文原文字数多，译文自己折行是真实场景。
+ */
+private val SAMPLE_ROWS = listOf(
+    LyricRowData("夜色渐浓 风穿过窗", "Night thickens, wind through the window"),
+    LyricRowData("我把心事折进纸飞机", "I fold my thoughts into a paper plane"),
+    LyricRowData("你说过的话还留在原地"),
+    LyricRowData(
+        "这一句故意写得很长很长 好让它折成两行 看看换行时位移会不会算歪",
+        "这一句的译文同样写得很长很长 用来验证译文自己折行时行高还准不准",
+    ),
+    LyricRowData("街灯一盏一盏亮起来", "Street lamps light up one by one"),
+    LyricRowData("像谁在数着回家的路"),
+    LyricRowData("别回头", "Don't look back"),
+    LyricRowData("有些告别不必说出口"),
+    LyricRowData("时间会替我们收好", "Time will keep them for us"),
+    LyricRowData("所有来不及讲完的以后", "All the afters we never finished saying"),
 )
 
 /** 换行间隔的可调范围（毫秒）。下限 800ms 模拟快歌的连续换行。 */
@@ -114,6 +127,9 @@ fun LyricsLabScreen(onBack: () -> Unit) {
     var intervalMs by remember { mutableStateOf(2400f) }
     var currentIndex by remember { mutableIntStateOf(0) }
     var alignment by remember { mutableStateOf(LyricsAlignment.CENTER) }
+    // 译文显隐在实验室里是本地状态，**不写回 NudgeConfig**：这里是取景器，
+    // 调的是观感参数，不该顺手改用户的真实配置。真实开关在设置页。
+    var showTranslation by remember { mutableStateOf(true) }
     var snapshot by remember { mutableStateOf<String?>(null) }
 
     // 自动换行。key 带 intervalMs，拖动滑块会重启循环，新节奏立刻生效
@@ -121,7 +137,7 @@ fun LyricsLabScreen(onBack: () -> Unit) {
     LaunchedEffect(intervalMs) {
         while (true) {
             delay(intervalMs.toLong())
-            currentIndex = (currentIndex + 1) % SAMPLE_LINES.size
+            currentIndex = (currentIndex + 1) % SAMPLE_ROWS.size
         }
     }
 
@@ -159,7 +175,9 @@ fun LyricsLabScreen(onBack: () -> Unit) {
                 .background(MaterialTheme.colorScheme.surfaceVariant)
         ) {
             LyricsScroller(
-                lines = SAMPLE_LINES,
+                rows = if (showTranslation) SAMPLE_ROWS else SAMPLE_ROWS.map {
+                    it.copy(translation = null)
+                },
                 currentIndex = currentIndex,
                 alignment = alignment,
                 spec = spec,
@@ -191,13 +209,19 @@ fun LyricsLabScreen(onBack: () -> Unit) {
                 onChange = { v -> updateSpec { it.copy(settleTweenMs = v.roundToInt()) } },
             )
             LabSlider(
-                label = "淡入淡出延迟",
-                value = spec.fadeDelayMs.toFloat(),
-                range = 0f..600f,
-                display = "${spec.fadeDelayMs}ms",
-                hint = "等位移基本走完再开始对焦。设 0 就是「边移动边对焦」，" +
-                    "两件事挤在一起会显得急。略小于当前行落定时间最顺",
-                onChange = { v -> updateSpec { it.copy(fadeDelayMs = v.roundToInt()) } },
+                label = "焦点时序偏移",
+                value = spec.focusLeadMs.toFloat(),
+                // 负到正贯通，让整个时序空间能连着扫过来——这块栽过四次的
+                // 教训就是端点数字看着都没问题，只有连续对比才分得出来。
+                range = -500f..400f,
+                display = when {
+                    spec.focusLeadMs > 0 -> "焦点先行 ${spec.focusLeadMs}ms"
+                    spec.focusLeadMs < 0 -> "位移先行 ${-spec.focusLeadMs}ms"
+                    else -> "同时开始"
+                },
+                hint = "正数＝先高亮再滚动（Apple Music 的时序，默认）；" +
+                    "负数＝先滚动再对焦（早先的口径）；0＝边移动边对焦，实测最急",
+                onChange = { v -> updateSpec { it.copy(focusLeadMs = v.roundToInt()) } },
             )
             LabSlider(
                 label = "淡入淡出时长",
@@ -313,6 +337,11 @@ fun LyricsLabScreen(onBack: () -> Unit) {
                     }
                 ) {
                     Text("对齐：${alignment.displayName}")
+                }
+                // 译文这一项只切预览，不进 spec：它不是动画参数，
+                // 所以也不该点亮 LAB 角标（角标的语义是「跑着实验室的动画参数」）。
+                TextButton(onClick = { showTranslation = !showTranslation }) {
+                    Text("译文：${if (showTranslation) "开" else "关"}")
                 }
                 // 不走 updateSpec：这里要的恰恰相反，是把 touched 清掉。
                 // clear() 与 touched=false 必须成对——前者让主界面回到默认值，
@@ -467,5 +496,5 @@ private fun LyricsAnimSpec.toSourceSnippet(): String = buildString {
     appendLine("alphaStep = ${fmt(alphaStep)}f,")
     appendLine("settleTweenMs = $settleTweenMs,")
     appendLine("fadeAnimMs = $fadeAnimMs,")
-    append("fadeDelayMs = $fadeDelayMs,")
+    append("focusLeadMs = $focusLeadMs,")
 }

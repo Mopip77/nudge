@@ -18,8 +18,15 @@ object LyricsFetcher {
 
     private const val TIMEOUT_MS = 5000
 
+    /**
+     * 接口返回的两份 LRC。[tlyric] 是中文译文，**可空**——大量歌曲没有译文
+     * （中文歌本来就不需要，英文歌也不是都有），此时接口返回的
+     * `tlyric.version` 为 0、`lyric` 为空串。
+     */
+    data class RawLyrics(val lrc: String, val tlyric: String?)
+
     /** 阻塞调用，必须在 IO 线程执行。任何失败返回 null，调用方降级为无歌词。 */
-    fun fetchLrc(songId: String): String? {
+    fun fetchLrc(songId: String): RawLyrics? {
         val url = "https://music.163.com/api/song/lyric?id=$songId&lv=1&kv=1&tv=-1"
         var connection: HttpURLConnection? = null
         return try {
@@ -34,10 +41,21 @@ object LyricsFetcher {
             if (connection.responseCode != HttpURLConnection.HTTP_OK) return null
 
             val body = connection.inputStream.bufferedReader().use { it.readText() }
-            JSONObject(body)
-                .optJSONObject("lrc")
+            val json = JSONObject(body)
+
+            val lrc = json.optJSONObject("lrc")
                 ?.optString("lyric")
                 ?.takeIf { it.isNotBlank() }
+                ?: return null
+
+            // 译文一直在响应里（请求参数的 tv=-1 就是在要它），早先只是没读。
+            // 没有译文时接口返回 version=0 + 空 lyric，takeIf 会滤成 null，
+            // 渲染侧据此退化为纯原文——这条降级路径是常态，不是异常。
+            val tlyric = json.optJSONObject("tlyric")
+                ?.optString("lyric")
+                ?.takeIf { it.isNotBlank() }
+
+            RawLyrics(lrc, tlyric)
         } catch (e: Exception) {
             // 无网络、超时、JSON 结构变化都走这里。静默失败，不打扰盲操。
             null

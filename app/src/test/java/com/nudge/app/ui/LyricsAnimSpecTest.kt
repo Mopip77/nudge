@@ -189,19 +189,48 @@ class LyricsAnimSpecTest {
     }
 
     @Test
-    fun `淡入淡出等位移基本走完才开始`() {
-        // 「先滑到位、再换焦点」。delay 为 0 就是旧的「边移动边对焦」，
-        // 两件事挤在一起显得急——这是用户直接反馈的观感问题。
-        //
-        // 阅读区走的是补间（见 settleTweenMs），所以这里比的是补间时长
-        // 而不是弹簧落定的估算值。
-        assertTrue("淡入淡出没有延迟，会边移动边对焦", spec.fadeDelayMs > 0)
-        // 但也不能等到位移完全停住：完全排队会有个能察觉的停顿，
-        // 稍有交叠才连贯。
+    fun `焦点与位移必须错开，不能同时开始`() {
+        // focusLeadMs == 0 就是「边移动边对焦」，两件事挤在一起显得急。
+        // 这一条与方向无关——无论谁先，都不该同时开始。
+        assertTrue("焦点与位移同时开始，会显得急", spec.focusLeadMs != 0)
+    }
+
+    @Test
+    fun `默认时序是焦点先行`() {
+        // Apple Music 的时序：先高亮下一句，极短间隔后整列才滚动。
+        // 早先的口径正相反（位移先行），改这个方向要连带改文档与注释，
+        // 所以用测试把当前的选择钉住。
         assertTrue(
-            "淡入淡出延迟 ${spec.fadeDelayMs}ms 不短于位移 ${spec.settleTweenMs}ms，会出现停顿",
-            spec.fadeDelayMs < spec.settleTweenMs,
+            "默认时序应为焦点先行（focusLeadMs > 0），实际 ${spec.focusLeadMs}",
+            spec.focusLeadMs > 0,
         )
+    }
+
+    @Test
+    fun `时序偏移要明显小于位移时长`() {
+        // 错开量若接近甚至超过位移时长，两段就完全排队了，
+        // 中间会有一个能察觉的停顿；稍有交叠才连贯。
+        assertTrue(
+            "时序偏移 ${spec.focusLeadMs}ms 不短于位移 ${spec.settleTweenMs}ms，会出现停顿",
+            kotlin.math.abs(spec.focusLeadMs) < spec.settleTweenMs,
+        )
+    }
+
+    @Test
+    fun `延迟换算的两边恒不同时为正`() {
+        // focusDelayMs / scrollDelayMs 是同一个有符号量的两个投影：
+        // 谁落后谁延迟，另一边必须恒为 0。两边都延迟等于整体延后，
+        // 那会让换行整体慢半拍，且是个没人会故意选的状态。
+        for (lead in listOf(-500, -90, -1, 0, 1, 90, 400)) {
+            val s = LyricsAnimSpec(focusLeadMs = lead)
+            assertTrue(
+                "focusLeadMs=$lead 时两边同时延迟了",
+                s.focusDelayMs == 0 || s.scrollDelayMs == 0,
+            )
+            assertTrue("延迟不能为负", s.focusDelayMs >= 0 && s.scrollDelayMs >= 0)
+            // 两边之差恒等于偏移量本身，保证换算无损
+            assertEquals(lead, s.scrollDelayMs - s.focusDelayMs)
+        }
     }
 
     @Test
