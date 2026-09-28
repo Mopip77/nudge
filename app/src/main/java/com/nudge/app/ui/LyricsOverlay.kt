@@ -89,8 +89,14 @@ private fun easingFor(ease: Float): Easing = remember(ease) {
  */
 private const val LYRIC_TICK_MS = 100L
 
-/** 一行歌词占的高度，决定滚动步长。必须随字号一起调，否则大字会被上下行挤掉。 */
-private val LINE_HEIGHT = 52.dp
+/**
+ * 一行歌词占的高度，决定滚动步长。必须随字号一起调，否则大字会被上下行挤掉。
+ *
+ * 从 [LyricRowData] 取值而不是各写一份：锚点计算按标称高度累加，
+ * 两处不一致会让锚点算歪——而那表现为「换行时整列先跳一帧再被拖回来」，
+ * 肉眼几乎看不出，只有逐帧互相关才量得到。
+ */
+private val LINE_HEIGHT = LyricRowData.LINE_HEIGHT_DP.dp
 
 /**
  * 歌词字号。**当前行与其余行一致**，不做大小区分。
@@ -111,8 +117,8 @@ private val FONT_SIZE = 24.sp
  */
 private val TRANSLATION_FONT_SIZE = 17.sp
 
-/** 原文与译文之间的间距。 */
-private val TRANSLATION_GAP = 4.dp
+/** 原文与译文之间的间距。与锚点计算共用同一个值，理由同 [LINE_HEIGHT]。 */
+private val TRANSLATION_GAP = LyricRowData.TRANSLATION_GAP_DP.dp
 
 /** 歌词左右边距。 */
 private val SIDE_PADDING = 20.dp
@@ -284,11 +290,15 @@ internal fun LyricsScroller(
         // 否则一旦出现折行，当前行就会逐行累积偏移、越滚越偏离锚点。
         val rowHeights = remember(rows) { mutableStateMapOf<Int, Int>() }
 
-        // 当前行之前所有行的实高之和，即当前行在列内的顶边位置。
-        // 未测量到的行按 LINE_HEIGHT 估算：仅发生在首帧，测量完成即自校正。
+        val density = LocalDensity.current.density
         val fallbackPx = with(LocalDensity.current) { LINE_HEIGHT.toPx() }
+
+        // 当前行之前所有行的实高之和，即当前行在列内的顶边位置。
+        // 未测量到的行按**各自的标称高度**估算（带译文的行更高），
+        // 而不是一律按 LINE_HEIGHT——仅发生在首帧，但一律按单行算会让
+        // 首帧的位移偏一大截，表现为歌词刚出现时抖一下。
         val topOffsetPx = (windowStart until anchorIndex)
-            .sumOf { rowHeights[it] ?: fallbackPx.toInt() }
+            .sumOf { (rowHeights[it] ?: rows[it].nominalHeightPx(density).toInt()).toDouble() }
             .toFloat()
 
         // 把当前行的顶边推到屏幕第 anchorRow 行的位置。
@@ -317,14 +327,15 @@ internal fun LyricsScroller(
         // 但窗口一旦开始滑动它就变成常数 —— 见 LyricRow 里对
         // pendingShift 的处理，位移不能只靠它驱动。
         // 锚点位置 = 当前行**上方 anchorRow 个 Row** 的标称高度之和。
-        // 逐个 Row 往上数而不是乘 anchorRow：每个 Row 记 1 或 2 个行高，
-        // 带译文的行占的位置更大。数不满 anchorRow 个（歌曲开头）时
-        // 就只算到第一行为止，当前行自然贴近顶边——与改动前一致。
-        val anchorNominalLines = (1..spec.anchorRow)
+        // 逐个 Row 往上累加真实的标称高度，而不是「行数 × LINE_HEIGHT」：
+        // 带译文的行不是整两倍高（见 LyricRowData.nominalHeightDp）。
+        // 数不满 anchorRow 个（歌曲开头）时就只算到第一行为止，
+        // 当前行自然贴近顶边——与改动前一致。
+        val anchorTopPx = (1..spec.anchorRow)
             .map { anchorIndex - it }
             .takeWhile { it >= 0 }
-            .sumOf { rows[it].nominalLines }
-        val anchorTopPx = fallbackPx * anchorNominalLines
+            .sumOf { rows[it].nominalHeightPx(density).toDouble() }
+            .toFloat()
         val targetOffsetY = anchorTopPx - topOffsetPx
 
         // 窗口滑动的补偿量，**算在这里而不是每行各自算**。
@@ -351,17 +362,19 @@ internal fun LyricsScroller(
         var shiftEpoch by remember { mutableIntStateOf(0) }
         if (windowStart != lastWindowStart) {
             // 补偿量要按**划过的那些 Row 的标称高度**累加，不能用
-            // 「行数 × 单倍行高」——带译文的 Row 有两倍高，窗口划过它时
-            // 按单倍算会少补一个译文的高度，表现为整列往上跳一截。
+            // 「行数 × 单倍行高」——带译文的 Row 更高，窗口划过它时
+            // 按单倍算会少补一截，表现为整列往上跳。
             // 这正是 Row 抽象要统一承担的那类换算。
             //
             // 叠加而非覆盖：连续快速换行时上一次还没走完，
             // 直接赋值会把残余位移抹掉。
             val from = minOf(lastWindowStart, windowStart)
             val to = maxOf(lastWindowStart, windowStart)
-            val passedLines = (from until to).sumOf { rows[it].nominalLines }
+            val passedPx = (from until to)
+                .sumOf { rows[it].nominalHeightPx(density).toDouble() }
+                .toFloat()
             val direction = if (windowStart > lastWindowStart) 1 else -1
-            pendingShift += direction * passedLines * fallbackPx
+            pendingShift += direction * passedPx
             lastWindowStart = windowStart
             shiftEpoch++
         }
