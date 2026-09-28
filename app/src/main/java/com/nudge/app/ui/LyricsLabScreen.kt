@@ -247,35 +247,23 @@ fun LyricsLabScreen(onBack: () -> Unit) {
                 onChange = { v -> updateSpec { it.copy(anchorRow = v.roundToInt()) } },
             )
 
-            SectionTitle("缓动梯度（拖尾自上而下递增）")
+            // 只剩一个滑块：整列共用一条曲线，逐行梯度已经删掉了
+            // （两版错峰都实测无效，理由见 LyricsAnimSpec.blockEase）。
+            // 早先这里有「底部懒惰度」「梯度跨度」两个滑块和一张逐行梯度表，
+            // 它们现在都驱动不了任何东西——摆着只会让人以为调了有用，
+            // 与「灵敏度只在 debug 包可调」那条同一个口径：
+            // 没有效果的控件比没有控件更糟。
+            SectionTitle("缓动曲线（整列同速）")
             LabSlider(
-                label = "顶部懒惰度（第 1 行）",
+                label = "懒惰度",
                 value = spec.easeTop,
                 range = 0f..1f,
                 display = fmt(spec.easeTop),
-                hint = "0 = 起步就全速（最干脆）。最上面那行是这趟位移的终点，" +
-                    "该最先到位，所以取小值",
+                hint = "贝塞尔第一个控制点的 x。0 = 起步就全速（最干脆的吸附感）；" +
+                    "越大起步越平、后段越赶，大到一定程度就是「先拱一下再走」的急",
                 onChange = { v -> updateSpec { it.copy(easeTop = v) } },
             )
-            LabSlider(
-                label = "底部懒惰度（最下一行）",
-                value = spec.easeBottom,
-                range = 0f..1f,
-                display = fmt(spec.easeBottom),
-                hint = "越大起步越慢、后段越赶，「被拖着走」越明显。" +
-                    "与顶部的差要够大，否则相邻行差太小，肉眼会合成一个刚体",
-                onChange = { v -> updateSpec { it.copy(easeBottom = v) } },
-            )
-            LabSlider(
-                label = "梯度跨度",
-                value = spec.gradientRampLines,
-                range = 1f..14f,
-                display = "${fmt(spec.gradientRampLines)} 行",
-                hint = "从屏幕顶边往下数，超出后统一取底部档（最懒）。" +
-                    "太窄则梯度早早跑完、下面一坨一起动；太开则相邻行差太小",
-                onChange = { v -> updateSpec { it.copy(gradientRampLines = v) } },
-            )
-            GradientTable(spec)
+            CurveTable(spec)
 
             SectionTitle("清晰度")
             LabSlider(
@@ -415,51 +403,42 @@ fun LyricsLabScreen(onBack: () -> Unit) {
 }
 
 /**
- * 逐行列出缓动参数与进度采样。
+ * 把整列那条缓动曲线的进度采样打出来。
  *
- * 加这张表是因为在这上面栽过几次，每次都是「看端点数字觉得没问题」：
+ * 早先这是一张**逐行**梯度表，因为那时每行的曲线都不同，在这上面栽过几次，
+ * 每次都是「看端点数字觉得没问题」：有一组看着有梯度、实际相邻行差太小，
+ * 肉眼合成刚体成了线性滚动；另一组方向整个写反，最上面那行最晃而它本该
+ * 最先落定。所以当初要把逐行的值摊开看。
  *
- * - 40→260 / 0.58→1 那组看着「有梯度」，实际上整个阅读区的阻尼都近临界，
- *   刚度相邻只差 27（肉眼合成刚体），于是整列就是线性滚动。
- * - 之后那组方向整个写反了：最上面那行最软最晃，而它本该是最先落定的。
- * - 再之后是弹簧本身的问题——速度峰值在极早期，观感是「往上拱一下」。
- *
- * 所以要把逐行的值摊开，一眼能看出**梯度朝哪个方向**、**相邻行差得够不够**。
- * 进度采样（25%/50% 时刻走了多少）比端点数字更能反映实际观感。
+ * 现在整列共用一条曲线（见 LyricsAnimSpec.blockEase），逐行摊开已无意义，
+ * 但**进度采样仍然有用**：「¼ 时刻走了多少」比端点数字更能反映
+ * 「先快后慢」到底有多快——吸附感强不强全看前段那一截。
  */
 @Composable
-private fun GradientTable(spec: LyricsAnimSpec) {
+private fun CurveTable(spec: LyricsAnimSpec) {
+    val e = spec.blockEase
+    // 直接采样渲染侧真正在用的那条曲线，不另算近似值，
+    // 否则表里的数字和屏幕上跑的不是一回事，调参就是瞎调。
+    val easing = CubicBezierEasing(e.coerceIn(0f, 1f), 0f, 0.25f, 1f)
     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp)) {
         Text(
-            text = "屏幕行  懒惰度   ¼时走了  ½时走了",
+            text = "时刻    ¼      ½      ¾",
             fontSize = 11.sp,
             fontFamily = FontFamily.Monospace,
             color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
         )
-        (0..8).forEach { row ->
-            val e = spec.easeAt(row)
-            // 直接采样这一行实际会用的那条曲线，而不是另算一个近似值——
-            // 表里的数字必须和屏幕上跑的是同一条曲线，否则调参就是瞎调。
-            val easing = CubicBezierEasing(e.coerceIn(0f, 1f), 0f, 0.25f, 1f)
-            val isAnchor = row == spec.anchorRow
-            Text(
-                text = "%4d  %7.2f  %6.0f%%  %6.0f%%%s".format(
-                    row, e,
-                    easing.transform(0.25f) * 100f,
-                    easing.transform(0.5f) * 100f,
-                    if (isAnchor) "  ← 当前行" else "",
-                ),
-                fontSize = 11.sp,
-                fontFamily = FontFamily.Monospace,
-                color = if (isAnchor) {
-                    MaterialTheme.colorScheme.primary
-                } else {
-                    MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f)
-                },
-            )
-        }
         Text(
-            text = "所有行 ${spec.settleTweenMs}ms 同时结束；越往下越晚发力",
+            text = "走了  %5.0f%%  %5.0f%%  %5.0f%%".format(
+                easing.transform(0.25f) * 100f,
+                easing.transform(0.5f) * 100f,
+                easing.transform(0.75f) * 100f,
+            ),
+            fontSize = 11.sp,
+            fontFamily = FontFamily.Monospace,
+            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
+        )
+        Text(
+            text = "整列同速，${spec.settleTweenMs}ms 走完。¼ 时刻走得越多，吸附感越强",
             fontSize = 10.sp,
             color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.45f),
             modifier = Modifier.padding(top = 4.dp),
@@ -527,8 +506,6 @@ private fun fmt(v: Float): String =
 private fun LyricsAnimSpec.toSourceSnippet(): String = buildString {
     appendLine("anchorRow = $anchorRow,")
     appendLine("easeTop = ${fmt(easeTop)}f,")
-    appendLine("easeBottom = ${fmt(easeBottom)}f,")
-    appendLine("gradientRampLines = ${fmt(gradientRampLines)}f,")
     appendLine("maxBlurDp = ${fmt(maxBlurDp)}f,")
     appendLine("uniformBlurDp = ${fmt(uniformBlurDp)}f,")
     appendLine("currentBlurDp = ${fmt(currentBlurDp)}f,")

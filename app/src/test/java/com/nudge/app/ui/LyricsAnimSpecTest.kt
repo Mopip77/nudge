@@ -5,18 +5,20 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 这些断言守的是**梯度的方向性与结构**，不是具体数值。
+ * 这些断言守的是动画的**结构性约束**，不是具体数值。
  *
- * 数值要在实验室里按观感调，随时会变；但「拖尾沿屏幕自上而下递增」
- * 这条方向性是这版动画的前提——列表往上走，最上面那行走得最久、
- * 最先落定，越靠下越是被拖着走。
+ * 数值要在实验室里按观感调，随时会变；但违反其中任何一条都会让动画退化，
+ * 而这在代码里看不出来、端点数字也看不出来——这一块栽过的每一次都是这样。
  *
- * 这个方向曾经被写反过一版（顶懒底干脆），代码上完全看不出问题，
- * 端点数字也「有梯度」，只有真机上肉眼看才发现最上面那行最晃。
+ * 现在守的主要是两组：
  *
- * 另一条同样重要：**位移只逼近目标、永不越过**。早先用弹簧
- * （PID 式：快速拉到目标再震荡），观感上是「拱一下」；
- * 现在用单调的贝塞尔曲线，各行只是趋近的快慢不同。
+ * 1. **位移只逼近目标、永不越过**。早先用弹簧（PID 式：快速拉到目标再震荡），
+ *    观感上是「拱一下」；现在是单调的贝塞尔曲线。
+ * 2. **高亮与位移的时序必须真的错开**。这是两个参数的比例关系，
+ *    任何一个单独看都正常——栽过一次，见对应用例的注释。
+ *
+ * 逐行梯度那组断言已随模型一起删掉（整列现在共用一条曲线），
+ * 它们记录的坑搬进了 `LyricsAnimSpec.easeTop` 的注释。
  */
 class LyricsAnimSpecTest {
 
@@ -40,68 +42,17 @@ class LyricsAnimSpecTest {
         return by((lo + hi) / 2)
     }
 
-    @Test
-    fun `懒惰度沿屏幕自上而下单调不减`() {
-        // 越靠下起步越慢 → 越像被拖着走 → 拖尾越明显
-        val values = (0..12).map { spec.easeAt(it) }
-        values.zipWithNext { a, b ->
-            assertTrue("懒惰度在屏幕下方反而变小了：$a -> $b", b >= a)
-        }
-    }
-
-    @Test
-    fun `最上面那行最干脆`() {
-        // 它是这趟位移的终点，该最先到位。写反方向时正是这一条先破。
-        (1..8).forEach { row ->
-            assertTrue("第 $row 行比屏幕顶还干脆", spec.easeAt(row) >= spec.easeAt(0))
-        }
-    }
-
-    @Test
-    fun `位移单调逼近目标，永不越过`() {
-        // 这是与弹簧最本质的差别，也是「拱一下」的根治办法。
-        // 弹簧会过冲再回弹；这条曲线的进度必须始终在 [0,1] 内单调不减。
-        (0..10).forEach { row ->
-            val e = spec.easeAt(row)
-            var prev = 0f
-            var t = 0f
-            while (t <= 1f) {
-                val p = progressAt(e, t)
-                assertTrue("第 $row 行在 t=$t 处进度 $p 超出 [0,1]，会越过目标", p in -0.001f..1.001f)
-                assertTrue("第 $row 行在 t=$t 处进度回退（$prev -> $p），说明有震荡", p >= prev - 0.001f)
-                prev = p
-                t += 0.02f
-            }
-        }
-    }
-
-    @Test
-    fun `越靠下的行起步越慢`() {
-        // 「被拖着走」的直接度量：同一时刻，下面的行走得更少。
-        val quarter = (0..7).map { progressAt(spec.easeAt(it), 0.25f) }
-        quarter.zipWithNext { a, b ->
-            assertTrue("下方的行在 ¼ 时刻反而走得更多：$a -> $b", b <= a + 0.001f)
-        }
-    }
-
-    @Test
-    fun `相邻行的差要看得出来`() {
-        // 差太小的话肉眼会把整列合成一个刚体，退化成「整列线性滚动」——
-        // 这个缺陷栽过一次，端点数字看着「有梯度」但实际没有。
-        // 取可视区首尾在 ¼ 时刻的进度差。
-        val top = progressAt(spec.easeAt(0), 0.25f)
-        val bottom = progressAt(spec.easeAt(spec.gradientRampLines.toInt()), 0.25f)
-        assertTrue("首尾行在 ¼ 时刻只差 ${top - bottom}，错峰看不出来", top - bottom >= 0.2f)
-    }
-
-    @Test
-    fun `梯度不对称：当前行上下同样距离处的曲线不同`() {
-        // 最早的实现用 abs(distance)，上下同距离的行必然拿到相同的曲线，
-        // 拖尾在两个方向同时出现。
-        val above = spec.easeAt(spec.anchorRow - 2)
-        val below = spec.easeAt(spec.anchorRow + 2)
-        assertTrue("上方应比下方干脆：above=$above below=$below", above < below)
-    }
+    // 早先这里有六个测试断言「逐行梯度」：懒惰度自上而下单调不减、
+    // 最上面那行最干脆、越靠下起步越慢、相邻行的差要看得出来、
+    // 梯度上下不对称、以及逐行的单调逼近。
+    //
+    // 那套模型已经删掉（整列共用一条曲线，见 LyricsAnimSpec.blockEase），
+    // 这些断言随之失去对象。**它们记录的坑仍然有效**，都搬进了
+    // easeTop 的注释里：无向距离导致上下对称扩散、方向整个写反、
+    // 两端差太小退化成线性滚动。将来若真要再做错峰，先读那段。
+    //
+    // 单调逼近那一条是唯一还成立的，保留在下面的
+    // `位移单调逼近，不越过目标` 里——它现在只需验一条曲线。
 
     @Test
     fun `高亮必须先淡完，位移才开始`() {
@@ -134,80 +85,32 @@ class LyricsAnimSpecTest {
     }
 
     @Test
-    fun `可视区内所有行同速——整列是刚体`() {
-        // 这是「先快后慢的吸附感」的前提：可视区内一旦各行不同速，
-        // 它们会互相错开，整列显得散，观感就是「急」。
-        // 注意断言的是 easeFor（渲染侧真正用的），不是 easeAt——
-        // 后者仍是那条逐行梯度，但现在只有 incoming 那档会取到它的端点。
-        val visible = 8
-        val first = spec.easeFor(0, visible)
-        (0 until visible).forEach { row ->
-            assertEquals(
-                "第 $row 行与整列不同速，刚体假设被破坏",
-                first, spec.easeFor(row, visible), 0.0001f,
-            )
-        }
-    }
-
-    @Test
-    fun `整列用最干脆的那一档`() {
-        // 懒惰度即贝塞尔第一个控制点的 x，越大起步越平。
+    fun `整列用最干脆的那一档，且是单一值`() {
+        // 懒惰度即贝塞尔第一个控制点的 x，**越大起步越平**。
         // 整列取 easeTop（最小）才有「先快后慢」的吸附感；
-        // 取大的那端会变成「先拱一下再走」，正是用户反馈的急。
+        // 取大的那端会变成「先拱一下再走」，正是用户反馈的「急」。
         assertEquals(spec.easeTop, spec.blockEase, 0.0001f)
-        assertTrue(
-            "整列的懒惰度应明显小于 incoming：block=${spec.blockEase} in=${spec.incomingEase}",
-            spec.blockEase < spec.incomingEase,
-        )
+
+        // blockEase 是个**不带参数**的值，这本身就是「整列同速」的保证——
+        // 拿不到行号就不可能按行区分。这里试过两版错峰都实测无效后删掉了：
+        // 逐行梯度让每行起步都慢；只让进场那行慢则因为歌词一直铺到屏幕
+        // 底部、那一行根本看不见。函数签名里**不该再出现 screenRow**，
+        // 这条测试拦着「将来又想加回第三版」。
+        assertTrue("blockEase 应在 [0,1] 内", spec.blockEase in 0f..1f)
+        assertTrue("blockEase 太大就没有吸附感了", spec.blockEase <= 0.4f)
     }
 
     @Test
-    fun `只有即将进入可视区的那一行错峰`() {
-        val visible = 8
-        assertTrue("可视区最后一行仍属整列", !spec.isIncoming(visible - 1, visible))
-        assertTrue("可视区外第一行应是 incoming", spec.isIncoming(visible, visible))
-        assertEquals(spec.incomingEase, spec.easeFor(visible, visible), 0.0001f)
-    }
-
-    @Test
-    fun `incoming 那行必须带一个能看出来的延迟`() {
-        // 只给它一条更懒的曲线是不够的：曲线再懒也是从第 0ms 就开始动，
-        // 肉眼分不出「懒」和「慢」。要读出「它晚了一拍」必须有静止段。
-        assertTrue("incomingDelayMs=${spec.incomingDelayMs} 太短，看不出来", spec.incomingDelayMs >= 60)
-        // 但延迟 + 时长要留在一次换行的间隔内，否则快歌时它会被
-        // 下一次换行打断，永远追不上。
-        assertTrue(
-            "延迟 ${spec.incomingDelayMs} + 时长 ${spec.settleTweenMs} 过长",
-            spec.incomingDelayMs + spec.settleTweenMs <= 800,
-        )
-    }
-
-    @Test
-    fun `梯度与锚点解耦`() {
-        // 梯度是纯粹的屏幕位置函数，挪动锚点不该改变任何一行的快慢。
-        // 早先跨度写成 anchorRow + gradientRampLines，是残留的
-        // 「以当前行为中心」的思路。
-        val moved = spec.copy(anchorRow = spec.anchorRow + 2)
-        (0..10).forEach { row ->
-            assertEquals(spec.easeAt(row), moved.easeAt(row), 0.001f)
+    fun `位移单调逼近，不越过目标`() {
+        // 整列现在共用这一条曲线，它必须是单调的——位移只趋近不越过，
+        // 否则就是弹簧式的过冲，焦点行晃一下会被读成「歌词跳了」。
+        var last = 0f
+        (0..20).forEach { i ->
+            val p = progressAt(spec.blockEase, i / 20f)
+            assertTrue("t=${i / 20f} 处进度回退了：$last -> $p", p >= last - 0.0001f)
+            assertTrue("进度越过了 1：$p", p <= 1.0001f)
+            last = p
         }
-    }
-
-    @Test
-    fun `屏幕顶部取顶部端点值`() {
-        assertEquals(spec.easeTop, spec.easeAt(0), 0.001f)
-    }
-
-    @Test
-    fun `超出梯度跨度后封顶在底部端点`() {
-        val beyond = spec.gradientRampLines.toInt() + 5
-        assertEquals(spec.easeBottom, spec.easeAt(beyond), 0.001f)
-    }
-
-    @Test
-    fun `容器顶边之外的行不再继续外推`() {
-        // 负的屏幕行号已滑出裁切区，按最干脆档处理即可
-        assertEquals(spec.easeAt(0), spec.easeAt(-4), 0.001f)
     }
 
     @Test
@@ -414,11 +317,12 @@ class LyricsAnimSpecTest {
     }
 
     @Test
-    fun `当前行起步不能太慢`() {
-        // 当前行是阅读焦点，起步太慢会显得歌词滞后于演唱。
-        // 它落在梯度中段，应该还算干脆。
-        val p = progressAt(spec.easeAt(spec.anchorRow), 0.5f)
-        assertTrue("当前行在半程只走了 ${p * 100}%，太拖", p >= 0.35f)
+    fun `整列起步不能太慢`() {
+        // 起步太慢会显得歌词滞后于演唱，也就是用户反馈的「急」的反面——
+        // 曲线在起点附近太平时，观感是「先拱一下再走」。
+        // 整列共用一条曲线，所以这里验的就是那条曲线本身。
+        val p = progressAt(spec.blockEase, 0.5f)
+        assertTrue("半程只走了 ${p * 100}%，太拖", p >= 0.35f)
     }
 
     @Test

@@ -443,17 +443,16 @@ internal fun LyricsScroller(
                 // 一起在窗口里平移，而不是被下一行接手（那会让位移从别人的
                 // 当前值继续跑，表现为换行时随机抽搐）。
                 key(index) {
-                    // offset 是**有向**的（负数表示在当前行上方），screenRow 是
-                    // 这行动画结束后会落在屏幕上的第几行。前者管清晰度，
-                    // 后者管弹簧——两套梯度的基准不同，不能合成一个参数。
+                    // offset 是**有向**的（负数表示在当前行上方），管清晰度。
                     //
-                    // 两者现在还分别基于**不同的行号**：清晰度跟 focusIndex
-                    // （立即变），排版跟 anchorIndex（滞后 scrollDelayMs）。
-                    // 这正是焦点先行的实现方式——焦点切了，排版还没动。
-                    // 把 offset 也改成基于 anchorIndex 的话，高亮会跟着一起
-                    // 延后，整个延迟就白设了。
+                    // 它基于 focusIndex（立即变）而不是 anchorIndex
+                    // （滞后 scrollDelayMs）——这正是焦点先行的实现方式：
+                    // 焦点切了，排版还没动。把 offset 也改成基于 anchorIndex
+                    // 的话，高亮会跟着一起延后，整个延迟就白设了。
+                    //
+                    // 位移那边不再需要「这行落在屏幕第几行」：整列共用一条
+                    // 缓动曲线，快慢与屏幕位置无关了。
                     val offset = index - focusIndex
-                    val layoutOffset = index - anchorIndex
                     LyricRow(
                         row = rows[index],
                         // 用 currentIndex 而非 focusIndex：前奏期
@@ -462,12 +461,6 @@ internal fun LyricsScroller(
                         // `< 0 -> 0` 是给排版用的，不是给焦点用的。
                         isCurrent = index == currentIndex,
                         offset = offset,
-                        // 梯度基准必须用**实际**锚点而不是 spec.anchorRow：
-                        // 锚点提了一行，当前行在屏幕上就真的落在第 anchorRow 行，
-                        // 用基准值会让它取到曲线上偏下（更懒）的一点，
-                        // 焦点行的起步比该有的慢半拍。
-                        screenRow = layoutOffset + anchorRow,
-                        visibleRows = visibleRows,
                         targetOffsetY = targetOffsetY,
                         // 本帧刚产生的窗口补偿量（父级统一算好），
                         // 各行据此在同一起点上开始这趟位移。
@@ -498,16 +491,15 @@ internal fun LyricsScroller(
 
 /**
  * [offset]：相对当前行的**有向**距离，负数表示在当前行上方，管清晰度。
- * [screenRow]：动画结束后落在屏幕上的第几行（0 为顶边），管缓动曲线。
- * [visibleRows]：容器能放下的行数，用来判断这行是不是「即将进入可视区」的那一行。
+ *
+ * 不再有 screenRow / visibleRows：整列共用一条缓动曲线之后，行的快慢
+ * 与它在屏幕上的位置无关了（见 [LyricsAnimSpec.blockEase]）。
  */
 @Composable
 private fun LyricRow(
     row: LyricRowData,
     isCurrent: Boolean,
     offset: Int,
-    screenRow: Int,
-    visibleRows: Int,
     targetOffsetY: Float,
     pendingShift: Float,
     shiftEpoch: Int,
@@ -526,13 +518,10 @@ private fun LyricRow(
     //
     // 时长对所有行相同是硬约束：若下面的行时长也更长，快歌连续换行时
     // 它们会追不上，位移累积起来越滚越偏。
-    // 可视区内所有行共用同一条曲线（整列作为刚体同速上移），
-    // 只有即将从下方进入可视区的那一行例外：它更懒、且带一个起始延迟。
-    // 错峰从「每行都不一样」收敛到「只有最下面那行不一样」——
-    // 详见 LyricsAnimSpec.blockEase / incomingEase 的注释。
-    val isIncoming = spec.isIncoming(screenRow, visibleRows)
-    val rowEasing = easingFor(spec.easeFor(screenRow, visibleRows))
-    val rowDelayMs = if (isIncoming) spec.incomingDelayMs else 0
+    // **所有行共用同一条曲线**，整列作为刚体同速上移。
+    // 试过两版错峰（逐行梯度、只让进场那行慢），都实测无效后删掉了，
+    // 理由见 LyricsAnimSpec.blockEase 的注释。
+    val rowEasing = easingFor(spec.blockEase)
 
     // **两条位移路径共用同一个 spec，且都不带延迟。**
     //
@@ -550,11 +539,8 @@ private fun LyricRow(
     // 排版跳变本身就晚发生，两条路径于是天然一起延后，各自都不必再等。
     // 这也消掉了「两条路径对延迟需求相反」这个本来就很别扭的分叉。
     //
-    // delayMillis 在这里是**另一件事**：它只给即将进入可视区的那一行，
-    // 是错峰的唯一来源，与焦点先行那个全局延迟无关。
     val scrollSpec = tween<Float>(
         durationMillis = spec.settleTweenMs,
-        delayMillis = rowDelayMs,
         easing = rowEasing,
     )
     val shiftSpec = scrollSpec
