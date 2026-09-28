@@ -29,7 +29,6 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
@@ -336,9 +335,34 @@ internal fun LyricsScroller(
         // 未测量到的行按**各自的标称高度**估算（带译文的行更高），
         // 而不是一律按 LINE_HEIGHT——仅发生在首帧，但一律按单行算会让
         // 首帧的位移偏一大截，表现为歌词刚出现时抖一下。
-        val topOffsetPx = (windowStart until anchorIndex)
-            .sumOf { (rowHeights[it] ?: rows[it].nominalHeightPx(density).toInt()).toDouble() }
-            .toFloat()
+        //
+        // **从 0 数起而不是从 windowStart 数起**，这是消掉排版跳变的关键。
+        //
+        // 早先从 windowStart 数：窗口每前进一行，这个和就**少掉一整行的高度**，
+        // 于是 targetOffsetY 出现一个阶跃。那个阶跃就是「排版跳变」——
+        // 整列瞬间位移一行，再靠 pendingShift 补一个反向偏移抵消掉、
+        // 然后把偏移动画回 0 冒充滚动。
+        //
+        // 那套机制有个躲不掉的缺陷：补偿在**组合期**加上，而把补偿降回 0 的
+        // 动画要等 LaunchedEffect（组合与布局提交**之后**才跑）。于是必然有
+        // 几帧是「补偿已加、动画还没开始」，整列停在被推下去的位置上。
+        // 真机量到 44~52ms 的静止，紧接着突然启动——用户说的
+        // 「从 y1 直接蹦到 y2，不是移动过去」就是它。
+        //
+        // 改成绝对累加之后，换行只让这个和**增加一行的高度**（连续变化），
+        // targetOffsetY 随之平滑变化，由每行的动画自然追过去。
+        // **不再有阶跃，也就不需要补偿**，那整套 pendingShift / shiftEpoch /
+        // carried 的机制连同它的时序缺陷一起消失了。
+        //
+        // 代价是要对 0 until anchorIndex 求和，长歌词末尾是几百次加法。
+        // 用 remember 按 (anchorIndex, rows) 缓存，只在换行时重算一次；
+        // 窗口外那些行没有实测高度，用标称高度——它们在屏幕外，
+        // 折行与否不影响观感，而标称值是确定性的（组合期就能算）。
+        val topOffsetPx = remember(rows, anchorIndex, rowHeights.size) {
+            (0 until anchorIndex)
+                .sumOf { (rowHeights[it] ?: rows[it].nominalHeightPx(density).toInt()).toDouble() }
+                .toFloat()
+        }
 
         // 把当前行的顶边推到屏幕第 anchorRow 行的位置。
         //
@@ -378,48 +402,43 @@ internal fun LyricsScroller(
             .takeWhile { it >= 0 }
             .sumOf { rows[it].nominalHeightPx(density).toDouble() }
             .toFloat()
+        // 各行要追的目标，**纯绝对量**（与 windowStart 无关），所以连续。
         val targetOffsetY = anchorTopPx - topOffsetPx
 
-        // 窗口滑动的补偿量，**算在这里而不是每行各自算**。
+        // Column 自己的原点补偿：windowStart 之前那些行的总高度。
         //
-        // 放在 LyricRow 里有两个病：
+        // 这是整套方案的关键一步，配合绝对的 targetOffsetY 把窗口消掉。
+        // 推导（设第 i 行、窗口起点 w、sum(a..b) 为行高之和）：
         //
-        // 1. 每行的 lastWindowStart 是 remember 出来的，而**新进窗口的行**
-        //    初值就等于当前 windowStart，于是它拿不到补偿，一出现就在终点
-        //    位置上，旁边的行却还在动——整列对不齐，看着就是「闪一下」。
-        // 2. 补偿写在 LaunchedEffect 里的话，effect 在布局提交之后才跑，
-        //    重新排版那一帧已经画出去了。
+        //   第 i 行在 Column 内的**布局位置** = sum(w..i)   ← 含 w，会跳
+        //   本项平移                          = sum(0..w)
+        //   该行自己的动画位移                = anchorTop - sum(0..i)
+        //   ----------------------------------------------------------
+        //   屏幕位置 = sum(w..i) + sum(0..w) + anchorTop - sum(0..i)
+        //            = sum(0..i) + anchorTop - sum(0..i)
+        //            = anchorTop                        ← w 被完全消掉
         //
-        // 提到父级、且在组合期同步累加，整列共用同一个补偿量，
-        // 新行也从同一个起点开始，才不会有错位。
-        var lastWindowStart by remember { mutableIntStateOf(windowStart) }
-        var pendingShift by remember { mutableStateOf(0f) }
-        // 单调递增的代号，每产生一次新补偿就 +1。
+        // 也就是说：窗口滑动在**布局**里造成的阶跃，与本项在同一帧里
+        // 精确抵消，屏幕位置恒等于锚点。**全程没有动画参与**，
+        // 因此不存在「补偿已加、把补偿降回 0 的动画还没开始」那个中间态
+        // ——那正是旧方案（pendingShift + carried）躲不掉的缺陷，
+        // 真机量到换行后 44~52ms 的静止，观感是「蹦一下再开始动」。
         //
-        // 各行的接手 effect 必须 key 在这个代号上，**不能 key 在 pendingShift**：
-        // 父级把 pendingShift 清零时会让 key 变化，effect 重启，
-        // 正在跑的 animateTo 被取消，shiftAnim 就停在半路回不到 0；
-        // 下一次换行又叠一层，位移逐行累积——表现为整列越来越往下沉，
-        // 当前行离开锚点行、顶上空出一大片。
-        var shiftEpoch by remember { mutableIntStateOf(0) }
-        if (windowStart != lastWindowStart) {
-            // 补偿量要按**划过的那些 Row 的标称高度**累加，不能用
-            // 「行数 × 单倍行高」——带译文的 Row 更高，窗口划过它时
-            // 按单倍算会少补一截，表现为整列往上跳。
-            // 这正是 Row 抽象要统一承担的那类换算。
-            //
-            // 叠加而非覆盖：连续快速换行时上一次还没走完，
-            // 直接赋值会把残余位移抹掉。
-            val from = minOf(lastWindowStart, windowStart)
-            val to = maxOf(lastWindowStart, windowStart)
-            val passedPx = (from until to)
-                .sumOf { rows[it].nominalHeightPx(density).toDouble() }
+        // 与旧方案的本质差别：旧方案是「先让它跳，再用动画拉回来」，
+        // 这里是「让它压根不跳」。
+        val windowTopPx = remember(rows, windowStart, rowHeights.size) {
+            (0 until windowStart)
+                .sumOf { (rowHeights[it] ?: rows[it].nominalHeightPx(density).toInt()).toDouble() }
                 .toFloat()
-            val direction = if (windowStart > lastWindowStart) 1 else -1
-            pendingShift += direction * passedPx
-            lastWindowStart = windowStart
-            shiftEpoch++
         }
+
+        // 整套 pendingShift / shiftEpoch 的补偿机制已经删掉。
+        //
+        // 它存在的唯一理由是修补「windowStart 前进导致 targetOffsetY 阶跃」，
+        // 而那个阶跃现在被 windowTopPx 在布局里静态抵消了（见上面的推导）。
+        // 没有阶跃就不需要补偿，也就没有那个躲不掉的时序缺陷：
+        // 补偿在组合期加上，把它降回 0 的动画却要等 LaunchedEffect，
+        // 中间几帧整列停在被推下去的位置上（真机 44~52ms）。
 
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -431,6 +450,12 @@ internal fun LyricsScroller(
                 // （要靠 translationY 滚动），这里让它按内容自然展开，
                 // 超出的部分由外层 clipToBounds 裁掉。
                 .wrapContentHeight(align = Alignment.Top, unbounded = true)
+                // 把 Column 从「以 windowStart 为原点」搬回绝对坐标系。
+                // 与各行绝对的 targetOffsetY 配合，windowStart 在最终屏幕
+                // 位置里被完全消掉（推导见上面 windowTopPx 的注释）。
+                // 这是**静态**平移、不参与任何动画——正因如此，
+                // 窗口滑动那一帧的排版阶跃在同一帧里就被抵消了。
+                .graphicsLayer { translationY = windowTopPx }
         ) {
             for (index in windowStart..windowEnd) {
                 // key 必须绑到绝对行号：窗口滑动时 Compose 默认按位置复用
@@ -462,12 +487,6 @@ internal fun LyricsScroller(
                         isCurrent = index == currentIndex,
                         offset = offset,
                         targetOffsetY = targetOffsetY,
-                        // 本帧刚产生的窗口补偿量（父级统一算好），
-                        // 各行据此在同一起点上开始这趟位移。
-                        // 清零由父级负责——交给各行清的话，第一行清掉之后
-                        // 后面的行就读不到了，整列又对不齐。
-                        pendingShift = pendingShift,
-                        shiftEpoch = shiftEpoch,
                         alignment = alignment,
                         spec = spec,
                         textColor = lyricColor,
@@ -477,15 +496,6 @@ internal fun LyricsScroller(
             }
         }
 
-        // 各行已经把 pendingShift 算进本帧的 translationY、也已经在自己的
-        // shiftAnim 里接手了同样的量，这里把它清零完成交接，屏幕位置不变。
-        //
-        // key 用 shiftEpoch 而不是 pendingShift：后者会让「清零」这个动作
-        // 本身再触发一次 effect 重启。放在 Column **之后**是因为组合自上而下，
-        // 必须等所有行都读过再清。
-        LaunchedEffect(shiftEpoch) {
-            if (pendingShift != 0f) pendingShift = 0f
-        }
     }
 }
 
@@ -501,8 +511,6 @@ private fun LyricRow(
     isCurrent: Boolean,
     offset: Int,
     targetOffsetY: Float,
-    pendingShift: Float,
-    shiftEpoch: Int,
     alignment: LyricsAlignment,
     spec: LyricsAnimSpec,
     textColor: Color,
@@ -544,98 +552,21 @@ private fun LyricRow(
         easing = rowEasing,
     )
 
-    // 窗口滑动的补偿量。
+    // 这里曾有一整套窗口补偿机制（pendingShift / shiftEpoch / carried），
+    // 已连同它的时序缺陷一起删掉。
     //
-    // targetOffsetY 只在歌曲开头随换行变化；一旦 windowStart 开始跟着
-    // 当前行走，它就冻结成常数（上方行数恒为 rowsAbove）。此时换行带来的
-    // 位移全部由「Column 重新排版」完成 —— 排版是瞬时的，没有动画，
-    // 表现就是「高亮行直接闪现到上一行」。
+    // 它要修的是「windowStart 前进导致 targetOffsetY 阶跃」，做法是
+    // 「先让整列跳一行，再用动画把它拉回来」。缺陷在于：补偿在组合期加上，
+    // 而把补偿降回 0 的动画要等 LaunchedEffect（组合与布局提交**之后**
+    // 才跑），于是必然有几帧是「补偿已加、动画还没开始」，整列停在被推下去
+    // 的位置上——真机量到 44~52ms 的静止，观感就是用户说的
+    // 「从 y1 直接蹦到 y2，不是移动过去」。换成 withFrameNanos 自驱动也
+    // 只能从 52ms 压到 44ms，因为 effect 晚于布局提交这个事实没变。
     //
-    // 所以窗口每前进 n 行，就给这一行补 +n 个行高的反向位移，
-    // 再按各自的缓动曲线回到 0：视觉上等价于整列平滑地往上滚了 n 行。
-    // 歌曲开头 windowStart 恒为 0，这一项恒为 0，走的仍是原来的路径。
-    // 窗口滑动的补偿量由父级统一算好传进来（见 LyricsScroller）。
-    //
-    // 本行要做的是**接手**：把 pendingShift 记进自己的 carried，
-    // 再按缓动曲线把它推回 0。渲染只读 carried 这一个量。
-    //
-    // 为什么补偿不能只放在 LaunchedEffect 里算：effect 在组合与布局提交
-    // **之后**才跑，于是帧序会变成「窗口变 → 整列瞬间上跳一行并画出去 →
-    // 下一帧才按回来 → 再开始动画」，那一帧的错位就是用户看到的
-    // 「所有字闪一下、像重新 fix position」。父级在组合期同步累加，
-    // pendingShift 当帧就参与渲染，整列纹丝不动。
-    // key 必须是 shiftEpoch（单调递增的代号），**不能是 pendingShift**：
-    // 父级清零时 pendingShift 会变，effect 跟着重启，正在跑的动画
-    // 被取消，carried 停在半路回不到 0。下一次换行再叠一层，
-    // 位移就逐行累积——整列越来越往下沉，当前行离开锚点行、顶上空出一片。
-
-    // **吸收要在组合期同步做，不能放在 LaunchedEffect 里。**
-    //
-    // 这是「先往下沉一下再弹起来」的真因。translationY 是三段相加
-    // （offsetAnim + shiftAnim + pendingShift），而 pendingShift 与
-    // shiftAnim 在交接窗口内会**同时非零**：effect 里 snapTo 已经把量吸进
-    // shiftAnim，父级清零 pendingShift 的 effect 却还没跑。于是有一帧
-    // 整列被按**两倍**的量推下去，下一帧再跳回来。
-    //
-    // 真机日志逐帧量到的就是这个（行高 156px）：
-    //   ty=-552 → -396（+156，排版上移与补偿抵消，屏幕不动，正确）
-    //          → -240（**+312，双计，整列真的低了一行**）
-    //          → -396（跳回）→ 再平滑爬回 -552
-    // 那一帧的下沉加紧接着的跳回，就是用户说的「向下再弹起」。
-    //
-    // 试过用一个 absorbedEpoch 标志在渲染期挡掉重复那一份，**无效**：
-    // 它是在 effect 里写的，写完要等下一次组合才读得到，而出问题的正是
-    // 当前这一帧。读时守卫救不了写时序问题。
-    //
-    // 正解是**取消掉「两个来源相加」这件事本身**：本行在组合期就把补偿量
-    // 记进自己的 carried 里，渲染只读 carried，不再读父级的 pendingShift。
-    // 于是不存在「一个已加、另一个还没减」的中间态——双计从结构上消失，
-    // 而不是靠守卫去挡。
-    //
-    // carried 必须是**组合期同步写**的（就在这里，不在 effect 里），
-    // 这样窗口滑动那一帧它当帧就参与 translationY，整列纹丝不动；
-    // 这与父级同步累加 pendingShift 是同一条理由。
-    var carried by remember { mutableStateOf(0f) }
-    var absorbedEpoch by remember { mutableIntStateOf(shiftEpoch) }
-    if (absorbedEpoch != shiftEpoch) {
-        // 叠加而非覆盖：连续快速换行时上一次可能还没走完。
-        carried += pendingShift
-        absorbedEpoch = shiftEpoch
-    }
-
-    // 把 carried 跑回 0。
-    //
-    // **不能用 Animatable.animateTo**，那是「急」的真正来源。真机逐帧量到：
-    //
-    //   +207ms  LAYOUT        排版跳变（focusLeadMs 的延迟）
-    //   +226ms  ty 跳 156px   整列瞬间位移，跳变**裸露在屏幕上**
-    //   +278ms  ty 才开始动   中间足足 52ms 一帧没出
-    //
-    // 那 52ms 的静止 + 紧接着的突然启动，就是用户说的「从 y1 直接蹦到 y2、
-    // 不是移动过去」。成因是 `LaunchedEffect` 在**组合与布局提交之后**才跑：
-    // 应用跳变的那一帧已经画出去了，animateTo 要到下一个调度点才开始，
-    // 中间这几帧整列就停在跳变后的位置上。
-    //
-    // 改为自己驱动：用 withFrameNanos 在**每一帧**按时间推进进度。
-    // 第一帧就能算出位移，跳变不会有裸露期。这也让 carried 始终是
-    // 组合期可读的普通状态，与上面的同步吸收一致。
-    LaunchedEffect(shiftEpoch) {
-        val from = carried
-        if (from != 0f) {
-            val durationMs = spec.settleTweenMs.toFloat()
-            var startNanos = 0L
-            while (true) {
-                val now = withFrameNanos { it }
-                if (startNanos == 0L) startNanos = now
-                val elapsed = (now - startNanos) / 1_000_000f
-                if (elapsed >= durationMs) break
-                // 与 scrollSpec 用同一条缓动曲线：两条路径的手感必须一致，
-                // 否则唱到窗口开始滑动那一行时会突然变一下。
-                carried = from * (1f - rowEasing.transform(elapsed / durationMs))
-            }
-            carried = 0f
-        }
-    }
+    // 现在的做法是**让它压根不跳**：targetOffsetY 改成绝对量（与
+    // windowStart 无关），Column 自己挂一个 windowTopPx 的静态平移，
+    // 两者在同一帧的布局里精确抵消（推导见 LyricsScroller 里 windowTopPx
+    // 的注释）。没有阶跃就不需要补偿，也就没有那个中间态。
 
     val offsetAnim = remember { Animatable(targetOffsetY) }
     // 首帧（容器尚未测量，targetOffsetY 还是基于估算值）不该看到位移从 0 走到位，
@@ -646,13 +577,12 @@ private fun LyricRow(
             offsetAnim.snapTo(targetOffsetY)
             settled = true
         } else {
-            // 与 shiftAnim 用**同一个 spec**。这条路径只在歌曲开头
-            // （窗口还没滑动）走，但两段的观感必须一致，
-            // 否则唱到第 6 行时手感会突然变一下。
+            // **现在这是唯一的位移路径**，歌曲开头与中段走同一条，
+            // 不再有「唱到第 6 行手感突然变一下」的问题——
+            // 那正是早先两条路径（offsetAnim / shiftAnim）并存的代价。
             //
-            // 两条路径的延迟需求现在也一致了（都不带）：targetOffsetY
-            // 本身就是从滞后的 anchorIndex 算出来的，它变化的那一刻
-            // 焦点已经先行过了。
+            // 不带延迟：targetOffsetY 本身就是从滞后的 anchorIndex 算出来的，
+            // 它变化的那一刻焦点已经先行过了。
             offsetAnim.animateTo(targetOffsetY, animationSpec = scrollSpec)
         }
     }
@@ -713,17 +643,11 @@ private fun LyricRow(
             // 逐行位移放在行容器上而不是 Text 上：Text 外面还有 padding，
             // 挂在内层会让位移与模糊的裁切边界相互作用，远处行回弹时边缘发虚。
             // graphicsLayer 的位移走绘制阶段，不触发重组或重测量。
-            // 三段相加：
-            // - offsetAnim：歌曲开头那段（窗口还没滑动时）
-            // - shiftAnim：窗口滑动后的每一次换行
-            // - pendingShift：本帧刚产生、effect 还没接手的补偿量。
-            //   少了它，窗口变化那一帧整列会先跳到终点再被按回来，
-            //   就是「所有字闪一下」。
-            .graphicsLayer {
-                // 两段相加即可：carried 已经涵盖了「本帧刚产生、动画还没
-                // 开始」与「动画进行中」两种情形，不再有第三个来源。
-                translationY = offsetAnim.value + carried
-            },
+            //
+            // **只剩一个来源**。早先是三段相加（offsetAnim + shiftAnim +
+            // pendingShift），那是为了补窗口滑动的排版阶跃；现在阶跃由
+            // Column 的 windowTopPx 静态抵消，位移就只有这一条路径了。
+            .graphicsLayer { translationY = offsetAnim.value },
         contentAlignment = Alignment.Center,
     ) {
         val textAlign = when (alignment) {
