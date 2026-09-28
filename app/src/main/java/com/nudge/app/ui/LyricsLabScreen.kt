@@ -37,6 +37,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.nudge.app.config.LyricsAlignment
+import com.nudge.app.lyrics.LyricWord
+import com.nudge.app.media.TrackInfo
+import android.os.SystemClock
 import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
 
@@ -72,6 +75,27 @@ private val SAMPLE_ROWS = listOf(
     LyricRowData("时间会替我们收好", "Time will keep them for us"),
     LyricRowData("所有来不及讲完的以后", "All the afters we never finished saying"),
 )
+
+/**
+ * 给样本行造一份字级时间表，让扫光在实验室里也能调。
+ *
+ * 逐字均分整行时长：真实数据各字时长不等（拖腔、换气），但**扫光的观感
+ * 参数（两档对比度、边界软硬度）与各字时长无关**，均分足够调它们。
+ * 要看真实节奏得在真机上放有 yrc 的歌。
+ *
+ * 按**字符**切而不是按词：中文逐字本来就是一字一块，
+ * 而这几行样本以中文为主。长句那行因此也能测到折行时的扫光边界——
+ * 那正是这一行存在的理由。
+ */
+private fun LyricRowData.withSyntheticWords(durationMs: Long): LyricRowData {
+    if (text.isEmpty()) return this
+    val per = (durationMs / text.length).coerceAtLeast(1L)
+    return copy(
+        words = text.mapIndexed { i, c ->
+            LyricWord(startMs = i * per, durationMs = per, text = c.toString())
+        }
+    )
+}
 
 /** 换行间隔的可调范围（毫秒）。下限 800ms 模拟快歌的连续换行。 */
 private const val MIN_INTERVAL_MS = 800f
@@ -130,6 +154,10 @@ fun LyricsLabScreen(onBack: () -> Unit) {
     // 译文显隐在实验室里是本地状态，**不写回 NudgeConfig**：这里是取景器，
     // 调的是观感参数，不该顺手改用户的真实配置。真实开关在设置页。
     var showTranslation by remember { mutableStateOf(true) }
+    // 逐字扫光的开关。真实歌曲里这由「有没有 yrc」决定、用户不可选，
+    // 实验室里要能关掉是为了**对照**——扫光调得好不好只有跟没有它的样子
+    // 比才看得出来，这与 LAB 角标要回答的是同一类问题。
+    var karaoke by remember { mutableStateOf(true) }
     var snapshot by remember { mutableStateOf<String?>(null) }
 
     // 自动换行。key 带 intervalMs，拖动滑块会重启循环，新节奏立刻生效
@@ -138,6 +166,30 @@ fun LyricsLabScreen(onBack: () -> Unit) {
         while (true) {
             delay(intervalMs.toLong())
             currentIndex = (currentIndex + 1) % SAMPLE_ROWS.size
+        }
+    }
+
+    // 扫光要一个时基。实验室没有真实播放器，所以造一个**每次换行时
+    // 重新对齐到 0** 的假 TrackInfo：positionMs 恒为 0、时间原点取当下，
+    // 于是 currentPositionMs() 从 0 开始随真实时间推进，正好铺满这一行。
+    //
+    // key 必须含 currentIndex，否则第二行开始扫光会从上一行的进度接着跑。
+    val labTrack = remember(currentIndex, intervalMs) {
+        TrackInfo(
+            title = "",
+            artist = "",
+            isLiked = false,
+            isPlaying = true,
+            positionMs = 0L,
+            positionUpdateTimeMs = SystemClock.elapsedRealtime(),
+            durationMs = intervalMs.toLong(),
+        )
+    }
+
+    val previewRows = remember(showTranslation, karaoke, intervalMs) {
+        SAMPLE_ROWS.map { row ->
+            val base = if (showTranslation) row else row.copy(translation = null)
+            if (karaoke) base.withSyntheticWords(intervalMs.toLong()) else base
         }
     }
 
@@ -175,12 +227,11 @@ fun LyricsLabScreen(onBack: () -> Unit) {
                 .background(MaterialTheme.colorScheme.surfaceVariant)
         ) {
             LyricsScroller(
-                rows = if (showTranslation) SAMPLE_ROWS else SAMPLE_ROWS.map {
-                    it.copy(translation = null)
-                },
+                rows = previewRows,
                 currentIndex = currentIndex,
                 alignment = alignment,
                 spec = spec,
+                track = if (karaoke) labTrack else null,
             )
         }
 
@@ -230,6 +281,39 @@ fun LyricsLabScreen(onBack: () -> Unit) {
                 display = "${spec.fadeAnimMs}ms",
                 hint = "延迟结束后这段渐变本身有多长",
                 onChange = { v -> updateSpec { it.copy(fadeAnimMs = v.roundToInt()) } },
+            )
+
+            // 逐字扫光。真实歌曲里只有约四成有 yrc，没有就自动退化为整行
+            // 高亮——这里的开关是**对照**用的，不对应任何用户可见配置。
+            SectionTitle("逐字扫光")
+            LabSlider(
+                label = "未唱部分的亮度",
+                value = spec.karaokeUnsungAlpha,
+                range = 0.1f..1f,
+                display = if (spec.karaokeUnsungAlpha >= 0.999f) {
+                    "关（整行同亮度）"
+                } else {
+                    fmt(spec.karaokeUnsungAlpha)
+                },
+                hint = "当前行**内部**的对比度，与行间层次是两回事。" +
+                    "压太暗会把预读下一句的能力砍掉一半——那是歌词的主要用途。" +
+                    "拖到最右即关闭扫光效果，用来对照",
+                onChange = { v -> updateSpec { it.copy(karaokeUnsungAlpha = v) } },
+            )
+            LabSlider(
+                label = "词内揭示占比",
+                value = spec.karaokeRevealFraction,
+                range = 0f..1f,
+                display = when {
+                    spec.karaokeRevealFraction <= 0.02f -> "0（整词一次点亮）"
+                    spec.karaokeRevealFraction >= 0.98f -> "1（匀速逐像素）"
+                    else -> fmt(spec.karaokeRevealFraction)
+                },
+                hint = "高亮的单位是**词**，词内再做一次快速的左→右揭示，走完停在词尾。" +
+                    "拖到 0 是整词一次点亮（词长中位数 450ms，会一跳一跳）；" +
+                    "拖到 1 退化成匀速逐像素推进（光停在词中间，看着像卡住）。" +
+                    "两端都实测不行，0.45 是折中",
+                onChange = { v -> updateSpec { it.copy(karaokeRevealFraction = v) } },
             )
 
             SectionTitle("锚点")
@@ -400,6 +484,11 @@ fun LyricsLabScreen(onBack: () -> Unit) {
                 // 所以也不该点亮 LAB 角标（角标的语义是「跑着实验室的动画参数」）。
                 TextButton(onClick = { showTranslation = !showTranslation }) {
                     Text("译文：${if (showTranslation) "开" else "关"}")
+                }
+                // 同上，只切预览不进 spec：真实歌曲里有没有逐字由数据决定，
+                // 不是可调参数。这里能关是为了跟整行高亮做对照。
+                TextButton(onClick = { karaoke = !karaoke }) {
+                    Text("逐字：${if (karaoke) "开" else "关"}")
                 }
                 // 不走 updateSpec：这里要的恰恰相反，是把 touched 清掉。
                 // clear() 与 touched=false 必须成对——前者让主界面回到默认值，

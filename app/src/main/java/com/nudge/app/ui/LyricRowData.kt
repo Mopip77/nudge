@@ -1,5 +1,7 @@
 package com.nudge.app.ui
 
+import com.nudge.app.lyrics.LyricWord
+
 /**
  * 歌词里的**一行**要展示的全部内容。
  *
@@ -20,6 +22,14 @@ data class LyricRowData(
     val text: String,
     /** 中文译文，null 表示这一行没有译文（常态，见 `LrcParser.parseWithTranslation`）。 */
     val translation: String? = null,
+    /**
+     * 字级时间表，null 表示这首歌没有逐字歌词（约六成的歌如此）。
+     *
+     * **不参与 [nominalHeightDp]**：扫光是行**内部**的效果，不改变排版，
+     * 所以它对锚点计算完全透明。这也是逐字能作为纯增强加进来、
+     * 不必动任何动画逻辑的原因。
+     */
+    val words: List<LyricWord>? = null,
 ) {
     /**
      * 这一行的**标称高度**（dp），用于锚点累加。
