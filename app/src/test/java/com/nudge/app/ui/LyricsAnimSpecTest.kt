@@ -104,6 +104,55 @@ class LyricsAnimSpecTest {
     }
 
     @Test
+    fun `可视区内所有行同速——整列是刚体`() {
+        // 这是「先快后慢的吸附感」的前提：可视区内一旦各行不同速，
+        // 它们会互相错开，整列显得散，观感就是「急」。
+        // 注意断言的是 easeFor（渲染侧真正用的），不是 easeAt——
+        // 后者仍是那条逐行梯度，但现在只有 incoming 那档会取到它的端点。
+        val visible = 8
+        val first = spec.easeFor(0, visible)
+        (0 until visible).forEach { row ->
+            assertEquals(
+                "第 $row 行与整列不同速，刚体假设被破坏",
+                first, spec.easeFor(row, visible), 0.0001f,
+            )
+        }
+    }
+
+    @Test
+    fun `整列用最干脆的那一档`() {
+        // 懒惰度即贝塞尔第一个控制点的 x，越大起步越平。
+        // 整列取 easeTop（最小）才有「先快后慢」的吸附感；
+        // 取大的那端会变成「先拱一下再走」，正是用户反馈的急。
+        assertEquals(spec.easeTop, spec.blockEase, 0.0001f)
+        assertTrue(
+            "整列的懒惰度应明显小于 incoming：block=${spec.blockEase} in=${spec.incomingEase}",
+            spec.blockEase < spec.incomingEase,
+        )
+    }
+
+    @Test
+    fun `只有即将进入可视区的那一行错峰`() {
+        val visible = 8
+        assertTrue("可视区最后一行仍属整列", !spec.isIncoming(visible - 1, visible))
+        assertTrue("可视区外第一行应是 incoming", spec.isIncoming(visible, visible))
+        assertEquals(spec.incomingEase, spec.easeFor(visible, visible), 0.0001f)
+    }
+
+    @Test
+    fun `incoming 那行必须带一个能看出来的延迟`() {
+        // 只给它一条更懒的曲线是不够的：曲线再懒也是从第 0ms 就开始动，
+        // 肉眼分不出「懒」和「慢」。要读出「它晚了一拍」必须有静止段。
+        assertTrue("incomingDelayMs=${spec.incomingDelayMs} 太短，看不出来", spec.incomingDelayMs >= 60)
+        // 但延迟 + 时长要留在一次换行的间隔内，否则快歌时它会被
+        // 下一次换行打断，永远追不上。
+        assertTrue(
+            "延迟 ${spec.incomingDelayMs} + 时长 ${spec.settleTweenMs} 过长",
+            spec.incomingDelayMs + spec.settleTweenMs <= 800,
+        )
+    }
+
+    @Test
     fun `梯度与锚点解耦`() {
         // 梯度是纯粹的屏幕位置函数，挪动锚点不该改变任何一行的快慢。
         // 早先跨度写成 anchorRow + gradientRampLines，是残留的

@@ -467,6 +467,7 @@ internal fun LyricsScroller(
                         // 用基准值会让它取到曲线上偏下（更懒）的一点，
                         // 焦点行的起步比该有的慢半拍。
                         screenRow = layoutOffset + anchorRow,
+                        visibleRows = visibleRows,
                         targetOffsetY = targetOffsetY,
                         // 本帧刚产生的窗口补偿量（父级统一算好），
                         // 各行据此在同一起点上开始这趟位移。
@@ -498,6 +499,7 @@ internal fun LyricsScroller(
 /**
  * [offset]：相对当前行的**有向**距离，负数表示在当前行上方，管清晰度。
  * [screenRow]：动画结束后落在屏幕上的第几行（0 为顶边），管缓动曲线。
+ * [visibleRows]：容器能放下的行数，用来判断这行是不是「即将进入可视区」的那一行。
  */
 @Composable
 private fun LyricRow(
@@ -505,6 +507,7 @@ private fun LyricRow(
     isCurrent: Boolean,
     offset: Int,
     screenRow: Int,
+    visibleRows: Int,
     targetOffsetY: Float,
     pendingShift: Float,
     shiftEpoch: Int,
@@ -523,7 +526,13 @@ private fun LyricRow(
     //
     // 时长对所有行相同是硬约束：若下面的行时长也更长，快歌连续换行时
     // 它们会追不上，位移累积起来越滚越偏。
-    val rowEasing = easingFor(spec.easeAt(screenRow))
+    // 可视区内所有行共用同一条曲线（整列作为刚体同速上移），
+    // 只有即将从下方进入可视区的那一行例外：它更懒、且带一个起始延迟。
+    // 错峰从「每行都不一样」收敛到「只有最下面那行不一样」——
+    // 详见 LyricsAnimSpec.blockEase / incomingEase 的注释。
+    val isIncoming = spec.isIncoming(screenRow, visibleRows)
+    val rowEasing = easingFor(spec.easeFor(screenRow, visibleRows))
+    val rowDelayMs = if (isIncoming) spec.incomingDelayMs else 0
 
     // **两条位移路径共用同一个 spec，且都不带延迟。**
     //
@@ -540,8 +549,12 @@ private fun LyricRow(
     // 现在延迟上移到了排版侧（见 LyricsScroller 的 layoutIndex）：
     // 排版跳变本身就晚发生，两条路径于是天然一起延后，各自都不必再等。
     // 这也消掉了「两条路径对延迟需求相反」这个本来就很别扭的分叉。
+    //
+    // delayMillis 在这里是**另一件事**：它只给即将进入可视区的那一行，
+    // 是错峰的唯一来源，与焦点先行那个全局延迟无关。
     val scrollSpec = tween<Float>(
         durationMillis = spec.settleTweenMs,
+        delayMillis = rowDelayMs,
         easing = rowEasing,
     )
     val shiftSpec = scrollSpec
@@ -571,13 +584,53 @@ private fun LyricRow(
     // 被取消，shiftAnim 停在半路回不到 0。下一次换行再叠一层，
     // 位移就逐行累积——整列越来越往下沉，当前行离开锚点行、顶上空出一片。
     val shiftAnim = remember { Animatable(0f) }
+
+    // **吸收要在组合期同步做，不能放在 LaunchedEffect 里。**
+    //
+    // 这是「先往下沉一下再弹起来」的真因。translationY 是三段相加
+    // （offsetAnim + shiftAnim + pendingShift），而 pendingShift 与
+    // shiftAnim 在交接窗口内会**同时非零**：effect 里 snapTo 已经把量吸进
+    // shiftAnim，父级清零 pendingShift 的 effect 却还没跑。于是有一帧
+    // 整列被按**两倍**的量推下去，下一帧再跳回来。
+    //
+    // 真机日志逐帧量到的就是这个（行高 156px）：
+    //   ty=-552 → -396（+156，排版上移与补偿抵消，屏幕不动，正确）
+    //          → -240（**+312，双计，整列真的低了一行**）
+    //          → -396（跳回）→ 再平滑爬回 -552
+    // 那一帧的下沉加紧接着的跳回，就是用户说的「向下再弹起」。
+    //
+    // 试过用一个 absorbedEpoch 标志在渲染期挡掉重复那一份，**无效**：
+    // 它是在 effect 里写的，写完要等下一次组合才读得到，而出问题的正是
+    // 当前这一帧。读时守卫救不了写时序问题。
+    //
+    // 正解是**取消掉「两个来源相加」这件事本身**：本行在组合期就把补偿量
+    // 记进自己的 carried 里，渲染只读 carried，不再读父级的 pendingShift。
+    // 于是不存在「一个已加、另一个还没减」的中间态——双计从结构上消失，
+    // 而不是靠守卫去挡。
+    //
+    // carried 必须是**组合期同步写**的（就在这里，不在 effect 里），
+    // 这样窗口滑动那一帧它当帧就参与 translationY，整列纹丝不动；
+    // 这与父级同步累加 pendingShift 是同一条理由。
+    var carried by remember { mutableStateOf(0f) }
+    var absorbedEpoch by remember { mutableIntStateOf(shiftEpoch) }
+    if (absorbedEpoch != shiftEpoch) {
+        // 叠加而非覆盖：连续快速换行时上一次可能还没走完。
+        carried += pendingShift
+        absorbedEpoch = shiftEpoch
+    }
+
+    // 把 carried 交给 Animatable 跑回 0。animateTo 每帧回调里同步写回
+    // carried，渲染始终只读这一个量。
     LaunchedEffect(shiftEpoch) {
-        if (pendingShift != 0f) {
-            shiftAnim.snapTo(shiftAnim.value + pendingShift)
+        if (carried != 0f) {
             // 回收必须立刻开始，否则排版跳变会裸露在屏幕上。
             // 现在 shiftSpec 与 scrollSpec 是同一个（都不带延迟），
             // 延迟统一由排版侧的 layoutIndex 承担。
-            shiftAnim.animateTo(targetValue = 0f, animationSpec = shiftSpec)
+            shiftAnim.snapTo(carried)
+            shiftAnim.animateTo(targetValue = 0f, animationSpec = shiftSpec) {
+                carried = value
+            }
+            carried = 0f
         }
     }
 
@@ -664,7 +717,9 @@ private fun LyricRow(
             //   少了它，窗口变化那一帧整列会先跳到终点再被按回来，
             //   就是「所有字闪一下」。
             .graphicsLayer {
-                translationY = offsetAnim.value + shiftAnim.value + pendingShift
+                // 两段相加即可：carried 已经涵盖了「本帧刚产生、动画还没
+                // 开始」与「动画进行中」两种情形，不再有第三个来源。
+                translationY = offsetAnim.value + carried
             },
         contentAlignment = Alignment.Center,
     ) {

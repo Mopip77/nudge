@@ -92,6 +92,24 @@ data class LyricsAnimSpec(
     val settleTweenMs: Int = 420,
 
     /**
+     * 即将进入可视区那一行的**起始延迟**（毫秒）。
+     *
+     * 整列同速上移之后，错峰全靠这一个参数：可视区内的行立刻一起走，
+     * 最下面那行等这么久才起步，再按 [incomingEase] 缓缓吸附上来。
+     * 观感是「整列先走，最后一句被拖着跟上来」。
+     *
+     * 做成**延迟**而不是只给它一条更懒的曲线：曲线再懒也是从第 0ms
+     * 就开始动的，肉眼分不出「懒」和「慢」；一个明确的静止段才读得出
+     * 「它晚了一拍」。这与 [focusLeadMs] 那里「想改时序要调延迟而不是
+     * 时长」是同一条经验。
+     *
+     * 取 120ms：明显能看出来，又不至于让它在整列都停下后才姗姗来迟
+     * （延迟 + [settleTweenMs] 要留在一次换行的间隔内，否则快歌时
+     * 它会被下一次换行打断，永远追不上）。
+     */
+    val incomingDelayMs: Int = 120,
+
+    /**
      * **非当前行统一用这一个模糊半径**，与距离无关。开启后
      * [maxBlurDp] / [blurRampLines] / [blurCutoffLines] 全部不参与。
      *
@@ -304,6 +322,53 @@ data class LyricsAnimSpec(
      * 那些行已经滑出裁切区，按最干脆档处理即可，没必要继续外推。
      */
     fun easeAt(screenRow: Int): Float = interpolate(screenRow, easeTop, easeBottom)
+
+    /**
+     * 整列统一上移用的缓动「懒惰度」。
+     *
+     * 恒为 [easeTop]，即最干脆的那一档——**可视区内所有行共用它**，
+     * 于是整列作为一个刚体同速上移。
+     *
+     * 这是刻意去掉逐行错峰后的口径。早先每行按屏幕位置取不同的懒惰度
+     * （上干脆、下懒），意图是 Apple Music 那种「上面的行先动、下面的行
+     * 被拖着走」的链条感；但那条梯度让**每一行的起步都是慢的**
+     * （懒惰度即贝塞尔第一个控制点的 x，越大起步越平），
+     * 整列于是显得「先拱一下再走」，实测观感就是急。
+     *
+     * 现在改为：可视区统一走 [easeTop]（先快后慢的吸附感），
+     * 错峰只保留在**即将进入可视区的那一行**上（见 [incomingEase]）——
+     * 链条感集中到一处反而更清楚，也不拖泥带水。
+     */
+    val blockEase: Float get() = easeTop
+
+    /**
+     * 即将从下方进入可视区的那一行用的懒惰度，恒为 [easeBottom]。
+     *
+     * 它明显懒于整列（默认 0.95 对 0.1），表现为「最下面那句晚一拍、
+     * 再缓缓吸附上来」。这是整套动画里**唯一**保留错峰的地方。
+     *
+     * 为什么只给这一行：它正从边缘淡出区里冒出来，本来就没有阅读价值，
+     * 让它慢一点既不影响读，又能留住「整列被带着走」的层次。
+     * 而可视区内的行一旦各自不同速，就会互相错开、显得散。
+     */
+    val incomingEase: Float get() = easeBottom
+
+    /**
+     * 这一行是不是「即将进入可视区」的那一行。
+     *
+     * [screenRow] 是动画结束后它会落在屏幕上的第几行，[visibleRows] 是
+     * 容器能放下的行数。落在可视区之外（含最后一行的边缘淡出区）的行
+     * 都按 incoming 处理——它们同样在往上飘，同样不该干扰阅读。
+     */
+    fun isIncoming(screenRow: Int, visibleRows: Int): Boolean =
+        screenRow >= visibleRows
+
+    /**
+     * 这一行实际该用的懒惰度：可视区内统一 [blockEase]，
+     * 下方待进入的行用 [incomingEase]。
+     */
+    fun easeFor(screenRow: Int, visibleRows: Int): Float =
+        if (isIncoming(screenRow, visibleRows)) incomingEase else blockEase
 
     /**
      * 把屏幕行号映射到 [0,1]，再在 [top]、[bottom] 之间线性插值。
