@@ -575,6 +575,10 @@ private fun LyricRow(
     // 模糊也要过渡：换行时直接跳到 0 是整个"生硬感"里最刺眼的一跳。
     // 延迟与 alpha 完全一致——两者是同一件事（建立焦点）的两个侧面，
     // 错开会让字先变清晰再去掉模糊，像对焦对了两次。
+    //
+    // 曾为性能把这里改成「不做动画、直接跳档」，配合半径离散化。
+    // 那套实测是净损失（见 LyricsAnimSpec.blurSteps），已一并退回。
+    // 真正有效的省法是**减少挂 blur 的行数**（blurCutoffLines）。
     val animatedBlur by animateDpAsState(
         targetValue = blurRadius,
         animationSpec = tween(

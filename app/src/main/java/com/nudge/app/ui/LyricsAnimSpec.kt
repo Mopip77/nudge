@@ -89,7 +89,41 @@ data class LyricsAnimSpec(
      */
     val settleTweenMs: Int = 420,
 
-    /** 最远处行的模糊半径（dp）。峰值要守住「最远处仍认得出字」。 */
+    /**
+     * **非当前行统一用这一个模糊半径**，与距离无关。开启后
+     * [maxBlurDp] / [blurRampLines] / [blurCutoffLines] 全部不参与。
+     *
+     * 这是观察 **Android 版 Apple Music** 得出的形态：那里所有非当前行
+     * 糊的程度**看不出差别**，没有「随距离渐进加深」的梯度，层次完全
+     * 交给透明度。我们早先那套逐行渐进的模型（0.9/1.8/2.7…dp）是推断，
+     * 不是照着实物做的。
+     *
+     * 同时它也是**流畅度的关键**：逐行渐进意味着 17 行有十几种互不相同
+     * 的半径，每一种都要独立生成一遍模糊；统一成一档后，所有非当前行
+     * 的半径完全相同，Skia 才谈得上复用。
+     *
+     * 注意这与被否掉的 [blurSteps]（离散成 3 档）**不是一回事**：
+     * 3 档仍有 3 种半径，且那版向上取整还把半径抬大了，两头不讨好。
+     * 两档才是实物的形态。
+     *
+     * 设为负数表示回到逐行渐进的旧模型，供实验室对比用。
+     */
+    val uniformBlurDp: Float = 0f,
+
+    /**
+     * 当前行的模糊半径（dp）。
+     *
+     * 取一个**极小的非零值**而不是 0：Apple Music 的当前行并非纯锐利，
+     * 字的边缘带一点柔光。0 也可以接受（少一个离屏缓冲，更省），
+     * 实验室里可以对比。
+     */
+    val currentBlurDp: Float = 0f,
+
+    /**
+     * 最远处行的模糊半径（dp）。峰值要守住「最远处仍认得出字」。
+     *
+     * **仅在 [uniformBlurDp] 为负（回到逐行渐进模型）时生效。**
+     */
     val maxBlurDp: Float = 9f,
 
     /**
@@ -118,9 +152,43 @@ data class LyricsAnimSpec(
      * 叠加边缘淡出（`EDGE_FADE_RATIO`）后，那几行本身还要再被蒙版
      * 擦掉一截，就更看不出来了。
      *
+     * **实际取 3 而不是 8**：8 是「不丢任何可见层次」的上界，但真机上
+     * 8 行 blur 仍然不够顺（Janky 7.6%、90 分位 12ms 但 95 分位 36ms，
+     * 换行时仍有肉眼可见的卡顿）。成本正比于挂 blur 的行数，
+     * 这是唯一有效的杠杆（离散半径、不做动画都试过，均无效甚至更差，
+     * 见 [blurSteps]）。
+     *
+     * 取 3 的依据是**景深只在焦点区附近有意义**：当前行清晰、
+     * 紧邻的三行渐次模糊，已经足够表达「这句在唱、下几句在后面」。
+     * 再远的行 alpha 也低（第 4 行起 ≤0.445），本来就在视觉边缘。
+     *
      * 设为 0 或负数表示不截断（全部挂 blur），供实验室对比用。
      */
-    val blurCutoffLines: Int = 8,
+    val blurCutoffLines: Int = 3,
+
+    /**
+     * 模糊半径离散成几档（含 0 那档）。**默认关闭（0 = 连续半径）。**
+     *
+     * 曾寄望它能提性能——想法是「同档的行共用同一个半径，Skia 可以
+     * 复用 RenderEffect」。**真机实测否掉了**：开 3 档反而更差
+     * （Janky 7.6% → 12.2%，90 分位 12ms → 25ms）。
+     *
+     * 两个原因：
+     *
+     * 1. Skia **不会因为半径相同就复用**。每个 `Modifier.blur` 的内容
+     *    不同（不同的文字），即便半径一样也得各做一遍——离屏缓冲的
+     *    数量一个没少，而那才是真正的成本。
+     * 2. 向上取整把 offset=1 的半径从 0.9dp 抬到一整档（3dp），
+     *    **半径越大高斯核越大、算得越慢**，反倒把成本推高了。
+     *
+     * 结论：成本正比于「挂了 blur 的行数」与「半径大小」，与半径是否
+     * 离散无关。真正有效的杠杆是 [blurCutoffLines]（减少行数）
+     * 和 [maxBlurDp]（减小半径）。
+     *
+     * 保留这个参数是为了让上面这条结论可复现——把它设回 3 就能重现
+     * 那次退步，省得将来有人再想一遍同样的主意。
+     */
+    val blurSteps: Int = 0,
 
     /**
      * 模糊／透明度在当前行**上方**的跨度倍率。
@@ -133,12 +201,24 @@ data class LyricsAnimSpec(
      */
     val upperFadeScale: Float = 1f,
 
-    /** 非当前行的起始透明度，随距离线性衰减到 [alphaFar]。 */
-    val alphaNear: Float = 0.55f,
-    val alphaFar: Float = 0.3f,
+    /**
+     * 非当前行的起始透明度，随距离线性衰减到 [alphaFar]。
+     *
+     * 这三个 alpha 参数现在**独自承担全部层次**（见 [uniformBlurDp]
+     * 默认关闭）。早先它们是配合 blur 设计的，跨度刻意收得很窄
+     * （0.55 起、地板 0.3），因为深浅主要交给模糊去表达；
+     * 去掉模糊后必须把跨度拉开，否则各行会糊成一片分不出远近。
+     *
+     * 0.45 起步比早先低：当前行恒为 1.0，第一档拉开得越多，
+     * 焦点越明确——这是纯 alpha 方案里建立焦点的唯一手段。
+     */
+    val alphaNear: Float = 0.45f,
 
-    /** 透明度每远一行衰减的量。 */
-    val alphaStep: Float = 0.035f,
+    /** 最远处行的透明度地板。压得比早先（0.3）更低，把景深让给透明度。 */
+    val alphaFar: Float = 0.12f,
+
+    /** 透明度每远一行衰减的量。比早先（0.035）更陡，补上模糊让出的层次。 */
+    val alphaStep: Float = 0.06f,
 
     /**
      * 淡入淡出（透明度、模糊）的过渡时长。
@@ -218,11 +298,43 @@ data class LyricsAnimSpec(
      * 接近封顶，各行之间本来就没有层次差别（详见 [blurCutoffLines]）。
      */
     fun blurDpAt(offset: Int): Float {
+        // 两档模型（默认）：当前行一档，其余**全部同一档**，与距离无关。
+        // 照着 Android 版 Apple Music 做的，同时也是流畅度的关键——
+        // 十几种互不相同的半径改成一种，Skia 才谈得上复用。
+        // 详见 uniformBlurDp。
+        if (uniformBlurDp >= 0f) {
+            if (offset == 0) return currentBlurDp
+            // 超出截断距离的行**完全不挂 blur**，层次纯靠 alpha 承担。
+            // 这才是省离屏缓冲的地方：统一半径只是让 Skia 有复用的余地，
+            // 但每一行仍各要一个缓冲；只有不挂，缓冲才真的消失。
+            if (blurCutoffLines > 0 && kotlin.math.abs(offset) > blurCutoffLines) return 0f
+            return uniformBlurDp
+        }
+
+        // 以下是逐行渐进的旧模型，仅在 uniformBlurDp 为负时启用（实验室对比用）
         if (offset == 0) return 0f
         if (blurCutoffLines > 0 && kotlin.math.abs(offset) > blurCutoffLines) return 0f
         val ramp = if (offset < 0) blurRampLines * upperFadeScale else blurRampLines
-        if (ramp <= 0f) return maxBlurDp
-        return maxBlurDp * (kotlin.math.abs(offset) / ramp).coerceIn(0f, 1f)
+        val raw = if (ramp <= 0f) {
+            maxBlurDp
+        } else {
+            maxBlurDp * (kotlin.math.abs(offset) / ramp).coerceIn(0f, 1f)
+        }
+        return snapBlur(raw)
+    }
+
+    /**
+     * 把连续半径吸附到 [blurSteps] 个档位上。见该字段的说明。
+     *
+     * 向上取整而非四舍五入：宁可略糊也不要让本该有模糊的行落到 0 档——
+     * 那会让紧邻当前行的行突然变清晰，焦点区的层次就断了。
+     */
+    private fun snapBlur(raw: Float): Float {
+        if (blurSteps <= 0 || maxBlurDp <= 0f) return raw
+        if (raw <= 0f) return 0f
+        val stepSize = maxBlurDp / blurSteps
+        val tier = kotlin.math.ceil(raw / stepSize).toInt().coerceIn(1, blurSteps)
+        return stepSize * tier
     }
 
     /** 距当前行 [offset] 行处的透明度。[isCurrent] 单独传：前奏期没有当前行。 */

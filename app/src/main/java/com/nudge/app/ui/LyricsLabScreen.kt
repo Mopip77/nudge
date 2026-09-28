@@ -275,11 +275,35 @@ fun LyricsLabScreen(onBack: () -> Unit) {
 
             SectionTitle("清晰度")
             LabSlider(
-                label = "最大模糊",
+                label = "统一模糊（两档模型）",
+                value = spec.uniformBlurDp,
+                // 下限取 -1 表示切回逐行渐进的旧模型，便于 A/B
+                range = -1f..14f,
+                display = if (spec.uniformBlurDp < 0f) {
+                    "关（用逐行渐进）"
+                } else {
+                    "${fmt(spec.uniformBlurDp)}dp"
+                },
+                hint = "非当前行统一这一档，与距离无关（Apple Music 的形态）。" +
+                    "**流畅度的主要杠杆**：半径只有一种，Skia 才谈得上复用。" +
+                    "拖到最左切回旧的逐行渐进模型对比",
+                onChange = { v -> updateSpec { it.copy(uniformBlurDp = v) } },
+            )
+            LabSlider(
+                label = "当前行模糊",
+                value = spec.currentBlurDp,
+                range = 0f..3f,
+                display = "${fmt(spec.currentBlurDp)}dp",
+                hint = "Apple Music 的当前行并非纯锐利，边缘带一点柔光。" +
+                    "0 最省（少一个离屏缓冲）",
+                onChange = { v -> updateSpec { it.copy(currentBlurDp = v) } },
+            )
+            LabSlider(
+                label = "最大模糊（仅旧模型）",
                 value = spec.maxBlurDp,
                 range = 0f..20f,
                 display = "${fmt(spec.maxBlurDp)}dp",
-                hint = "峰值要守住「最远处仍认得出字」",
+                hint = "峰值要守住「最远处仍认得出字」。统一模糊开启时本项不生效",
                 onChange = { v -> updateSpec { it.copy(maxBlurDp = v) } },
             )
             LabSlider(
@@ -289,6 +313,19 @@ fun LyricsLabScreen(onBack: () -> Unit) {
                 display = "${fmt(spec.blurRampLines)} 行",
                 hint = "与峰值配着调，决定观感的是斜率不只是峰值",
                 onChange = { v -> updateSpec { it.copy(blurRampLines = v) } },
+            )
+            LabSlider(
+                label = "模糊行数上限",
+                value = spec.blurCutoffLines.toFloat(),
+                range = 0f..17f,
+                display = if (spec.blurCutoffLines <= 0) {
+                    "不限（全部挂）"
+                } else {
+                    "${spec.blurCutoffLines} 行"
+                },
+                hint = "性能杠杆：每个挂 blur 的行都要一个全屏离屏缓冲。" +
+                    "拖到 0 看观感上界，往小拖看流畅度换来多少",
+                onChange = { v -> updateSpec { it.copy(blurCutoffLines = v.roundToInt()) } },
             )
             LabSlider(
                 label = "上方跨度倍率",
@@ -489,7 +526,10 @@ private fun LyricsAnimSpec.toSourceSnippet(): String = buildString {
     appendLine("easeBottom = ${fmt(easeBottom)}f,")
     appendLine("gradientRampLines = ${fmt(gradientRampLines)}f,")
     appendLine("maxBlurDp = ${fmt(maxBlurDp)}f,")
+    appendLine("uniformBlurDp = ${fmt(uniformBlurDp)}f,")
+    appendLine("currentBlurDp = ${fmt(currentBlurDp)}f,")
     appendLine("blurRampLines = ${fmt(blurRampLines)}f,")
+    appendLine("blurCutoffLines = $blurCutoffLines,")
     appendLine("upperFadeScale = ${fmt(upperFadeScale)}f,")
     appendLine("alphaNear = ${fmt(alphaNear)}f,")
     appendLine("alphaFar = ${fmt(alphaFar)}f,")

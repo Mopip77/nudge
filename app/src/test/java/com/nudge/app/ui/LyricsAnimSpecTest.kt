@@ -136,60 +136,132 @@ class LyricsAnimSpecTest {
         assertEquals(0f, spec.blurDpAt(0), 0.001f)
     }
 
+    /** 逐行渐进的旧模型，只有它才谈得上「截断距离」「梯度」。 */
+    private val gradientSpec = LyricsAnimSpec(uniformBlurDp = -1f)
+
     @Test
-    fun `模糊在截断距离内随距离单调不减并封顶在峰值`() {
-        // 只看截断距离以内：超出的行不挂 blur（返回 0），那是性能优化，
-        // 见「超出截断距离的行不挂模糊」那条。
-        val values = (0..spec.blurCutoffLines).map { spec.blurDpAt(it) }
+    fun `默认一行都不挂 blur，层次纯靠透明度`() {
+        // 这是最终形态：观察 Android 版 Apple Music，非当前行只是**淡**，
+        // 并没有模糊——先前把「淡到看不清笔画」误读成了「糊」。
+        //
+        // 对流畅度是决定性的：每个挂 blur 的行都要一个全屏宽的离屏缓冲，
+        // 17 行全挂时 24.6% 的帧掉帧；一行不挂降到 3.9%、90 分位 30ms→12ms。
+        val blurred = (-8..8).count { spec.blurDpAt(it) > 0f }
+        assertEquals("默认不该有任何行挂 blur", 0, blurred)
+    }
+
+    @Test
+    fun `透明度独自承担层次，跨度要够大`() {
+        // 去掉 blur 后，alpha 是建立焦点与远近的**唯一**手段，
+        // 跨度必须比「配合 blur」的年代拉得更开，否则各行糊成一片。
+        // 早先：0.55 起、地板 0.3、每行 0.035（跨度 0.25）。
+        val near = spec.alphaAt(1, false)
+        val far = spec.alphaFar
+        assertTrue(
+            "当前行与紧邻行的对比 ${1f - near} 太弱，焦点不明确",
+            1f - near >= 0.4f,
+        )
+        assertTrue("alpha 跨度 ${near - far} 太窄，分不出远近", near - far >= 0.25f)
+    }
+
+    @Test
+    fun `开启两档模糊后当前行与其余行有区分`() {
+        // 机制保留，供实验室对比——真要开的话当前行必须更清晰
+        val withBlur = LyricsAnimSpec(uniformBlurDp = 4f, currentBlurDp = 0f)
+        assertTrue(
+            "当前行不比其余行清晰，焦点就没了",
+            withBlur.blurDpAt(0) < withBlur.blurDpAt(1),
+        )
+        // 截断之外仍不挂
+        assertEquals(0f, withBlur.blurDpAt(withBlur.blurCutoffLines + 1), 0.001f)
+    }
+
+    @Test
+    fun `开启两档模糊时半径要守住最远处仍认得出字`() {
+        val withBlur = LyricsAnimSpec(uniformBlurDp = 4f)
+        assertTrue("统一半径过大，远处会糊成色块", withBlur.uniformBlurDp <= 12f)
+        assertTrue("统一半径过小，看不出景深", withBlur.uniformBlurDp >= 3f)
+    }
+
+    @Test
+    fun `旧模型下模糊在截断距离内随距离单调不减并封顶在峰值`() {
+        val values = (0..gradientSpec.blurCutoffLines).map { gradientSpec.blurDpAt(it) }
         values.zipWithNext { a, b -> assertTrue("模糊反而变小了：$a -> $b", b >= a) }
 
         // 不截断时才谈得上「远处封顶在峰值」
-        val noCutoff = spec.copy(blurCutoffLines = 0)
+        val noCutoff = gradientSpec.copy(blurCutoffLines = 0)
         assertEquals(noCutoff.maxBlurDp, noCutoff.blurDpAt(30), 0.001f)
     }
 
     @Test
-    fun `超出截断距离的行不挂模糊`() {
-        // 纯性能优化：每个挂 blur 的行都要一个全屏宽的离屏缓冲，
-        // 而渲染窗口有 17 行。真机实测 17 个缓冲把 issueDrawCommands
-        // 拖到 6~11ms（96Hz 预算 10.4ms），24.6% 的帧掉帧，
-        // 观感就是「滚动一卡一卡、像帧数不够」。
-        assertTrue("截断距离内应当有模糊", spec.blurDpAt(spec.blurCutoffLines) > 0f)
+    fun `旧模型下超出截断距离的行不挂模糊`() {
+        // 每个挂 blur 的行都要一个全屏宽的离屏缓冲，而渲染窗口有 17 行。
+        val s = gradientSpec
+        assertTrue("截断距离内应当有模糊", s.blurDpAt(s.blurCutoffLines) > 0f)
         assertEquals(
             "超出截断距离仍在挂 blur，离屏缓冲省不下来",
             0f,
-            spec.blurDpAt(spec.blurCutoffLines + 1),
+            s.blurDpAt(s.blurCutoffLines + 1),
             0.001f,
         )
         // 上方同理，截断是按绝对距离算的
-        assertEquals(0f, spec.blurDpAt(-(spec.blurCutoffLines + 1)), 0.001f)
-    }
-
-    @Test
-    fun `截断距离处 alpha 已到地板，截掉模糊看不出层次差别`() {
-        // 这是取 blurCutoffLines=8 的依据：从那里起 alpha 恒为 alphaFar，
-        // 各行之间本来就没有层次差别，blur 不承担任何表达。
-        // 若将来调了 alphaNear/alphaStep 让地板来得更晚，这条会拦住，
-        // 提示截断距离要跟着往后挪。
-        assertEquals(
-            "截断距离处 alpha 还没到地板，此处截掉模糊会丢掉可见的层次",
-            spec.alphaFar,
-            spec.alphaAt(spec.blurCutoffLines, false),
-            0.01f,
-        )
+        assertEquals(0f, s.blurDpAt(-(s.blurCutoffLines + 1)), 0.001f)
     }
 
     @Test
     fun `截断可以关闭`() {
-        // 设 0 表示全部挂 blur，供实验室对比用
-        val noCutoff = spec.copy(blurCutoffLines = 0)
+        // 设 0 表示全部挂 blur，供实验室对比用。
+        // 前提是先开启模糊——默认是纯 alpha、一行都不挂。
+        val noCutoff = spec.copy(uniformBlurDp = 4f, blurCutoffLines = 0)
         assertTrue(noCutoff.blurDpAt(50) > 0f)
     }
 
     @Test
-    fun `模糊第 1 行即起步`() {
-        // 「紧邻行完全清晰」的豁免档是早先实现的特征，这版刻意去掉了
-        assertTrue(spec.blurDpAt(1) > 0f)
+    fun `默认不离散化半径`() {
+        // 离散化曾被当作性能优化引入，真机实测反而更差
+        // （Janky 7.6% → 12.2%，90 分位 12ms → 25ms）：
+        // Skia 不会因为半径相同就复用（内容不同仍要各做一遍），
+        // 而向上取整把半径抬大了，高斯核更大反而更慢。
+        // 详见 blurSteps 的注释。
+        assertEquals(0, spec.blurSteps)
+    }
+
+    @Test
+    fun `开启离散化后半径只取有限档位`() {
+        // 机制本身是对的，只是不划算。保留可开启，让那次实测结论可复现。
+        val stepped = spec.copy(blurSteps = 3)
+        val radii = (-12..12).map { stepped.blurDpAt(it) }.toSet()
+        assertTrue(
+            "半径档位有 ${radii.size} 种，离散化没生效",
+            radii.size <= 3 + 1, // +1 是 0 那档
+        )
+    }
+
+    @Test
+    fun `离散化不改变单调性`() {
+        // 吸附后仍必须随距离单调不减，否则会出现「远的反而更清晰」
+        val stepped = spec.copy(blurSteps = 3)
+        val values = (0..stepped.blurCutoffLines).map { stepped.blurDpAt(it) }
+        values.zipWithNext { a, b -> assertTrue("模糊反而变小了：$a -> $b", b >= a) }
+    }
+
+    @Test
+    fun `开启模糊时紧邻当前行不糊到看不清`() {
+        // 紧邻的行承担「预读下一句」，糊到认不出字就失去意义了。
+        // 默认是纯 alpha（不挂 blur），这条只在显式开启模糊时才有意义。
+        val near = LyricsAnimSpec(uniformBlurDp = 4f).blurDpAt(1)
+        assertTrue("紧邻行没有模糊，焦点层次会断", near > 0f)
+        assertTrue(
+            "紧邻行模糊 ${near}dp 过大，预读下一句会看不清",
+            near <= 12f,
+        )
+    }
+
+    @Test
+    fun `开启模糊时第 1 行即起步`() {
+        // 「紧邻行完全清晰」的豁免档是更早实现的特征，刻意去掉了。
+        // 默认纯 alpha 不挂 blur，这条只在显式开启模糊时才有意义。
+        assertTrue(LyricsAnimSpec(uniformBlurDp = 4f).blurDpAt(1) > 0f)
     }
 
     @Test
@@ -203,7 +275,9 @@ class LyricsAnimSpecTest {
 
     @Test
     fun `上方跨度倍率小于 1 时上方糊得更快`() {
-        val asymmetric = spec.copy(upperFadeScale = 0.5f)
+        // 这条只对逐行渐进的旧模型成立：两档模型下所有非当前行同一档，
+        // 上下本来就没有差别（alpha 那边仍然有向）。
+        val asymmetric = gradientSpec.copy(upperFadeScale = 0.5f)
         assertTrue(asymmetric.blurDpAt(-3) > asymmetric.blurDpAt(3))
     }
 
