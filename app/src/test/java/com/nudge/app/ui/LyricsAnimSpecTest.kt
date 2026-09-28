@@ -298,6 +298,43 @@ class LyricsAnimSpecTest {
     }
 
     @Test
+    fun `开译文时锚点提一行`() {
+        // 锚点是按标称高度累加出来的，而译文行约 82dp 而非 52dp。
+        // 不提这一行，同样的三行上文会从 156dp 涨到 246dp。
+        assertEquals(spec.anchorRow - 1, spec.anchorRowFor(true))
+        assertEquals(spec.anchorRow, spec.anchorRowFor(false))
+    }
+
+    @Test
+    fun `锚点高度不因译文开关而明显变化`() {
+        // 这条才是真正要守的不变式——「提一行」只是手段，
+        // 目的是让焦点在屏幕上的**像素位置**基本不动。
+        // 光断言行号的话，将来改了行高或译文排版就会静默失效。
+        val plain = LyricRowData("原文")
+        val withTr = LyricRowData("原文", "译文")
+
+        val plainTop = spec.anchorRowFor(false) * plain.nominalHeightDp()
+        val trTop = spec.anchorRowFor(true) * withTr.nominalHeightDp()
+
+        // 允许一个行高以内的浮动：译文行数普遍少于原文，上方那几行
+        // 不一定都带译文，本来就做不到严格等高。
+        val drift = kotlin.math.abs(trTop - plainTop)
+        assertTrue(
+            "锚点高度 $plainTop -> $trTop，漂移 ${drift}dp 超过一个行高",
+            drift < LyricRowData.LINE_HEIGHT_DP,
+        )
+    }
+
+    @Test
+    fun `锚点不会被提成负数`() {
+        // 实验室可以把 anchorRow 拖到 0（当前行贴顶边），
+        // 再减一就是负数，anchorTopPx 的 `1..anchorRow` 会变成空区间
+        // 而静默退化。这里钉住下界。
+        val top = spec.copy(anchorRow = 0)
+        assertEquals(0, top.anchorRowFor(true))
+    }
+
+    @Test
     fun `当前行起步不能太慢`() {
         // 当前行是阅读焦点，起步太慢会显得歌词滞后于演唱。
         // 它落在梯度中段，应该还算干脆。

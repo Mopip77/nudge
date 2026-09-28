@@ -237,6 +237,17 @@ internal fun LyricsScroller(
     // 前奏期间把第一行当作"即将唱的行"摆到锚点位置
     val anchorIndex = if (currentIndex < 0) 0 else currentIndex
 
+    // 锚点行号按**这首歌实际有没有译文**定，而不是看译文开关。
+    // 开关开着但这首歌没有译文时（网易云的纯中文歌常态），行高仍是 52dp，
+    // 此时提锚点会让焦点凭空上移一行。以数据为准就自动覆盖了这种情形，
+    // 也让实验室那份混合样本（有译文/无译文各半）走同一条判断。
+    //
+    // 只看整首歌有没有译文、而不是逐行判断上方那几行：后者会让锚点
+    // 随歌曲推进在两个值之间反复跳，焦点位置晃动，比现在的小幅浮动更糟。
+    val anchorRow = remember(rows, spec.anchorRow) {
+        spec.anchorRowFor(rows.any { it.translation != null })
+    }
+
     BoxWithConstraints(
         modifier = modifier
             .fillMaxSize()
@@ -278,8 +289,8 @@ internal fun LyricsScroller(
         //
         // 两端各多渲两行做缓冲：一行给滚动动画途中的边缘空档，
         // 另一行保证裁切边界外总有内容顶上，不会露出半截字。
-        val rowsAbove = spec.anchorRow + 2
-        val rowsBelow = (visibleRows - spec.anchorRow).coerceAtLeast(1) + 2
+        val rowsAbove = anchorRow + 2
+        val rowsBelow = (visibleRows - anchorRow).coerceAtLeast(1) + 2
 
         // 只渲染当前行附近的窗口，避免长歌词把上千个 Text 都组合出来
         val windowStart = (anchorIndex - rowsAbove).coerceAtLeast(0)
@@ -291,7 +302,6 @@ internal fun LyricsScroller(
         val rowHeights = remember(rows) { mutableStateMapOf<Int, Int>() }
 
         val density = LocalDensity.current.density
-        val fallbackPx = with(LocalDensity.current) { LINE_HEIGHT.toPx() }
 
         // 当前行之前所有行的实高之和，即当前行在列内的顶边位置。
         // 未测量到的行按**各自的标称高度**估算（带译文的行更高），
@@ -329,9 +339,12 @@ internal fun LyricsScroller(
         // 锚点位置 = 当前行**上方 anchorRow 个 Row** 的标称高度之和。
         // 逐个 Row 往上累加真实的标称高度，而不是「行数 × LINE_HEIGHT」：
         // 带译文的行不是整两倍高（见 LyricRowData.nominalHeightDp）。
+        //
+        // 行数本身也随译文而变（见上面 anchorRow 的推导）：正因为这里按
+        // 标称高度累加，「第几行」与「多高」才会脱钩，要靠少数一行补回来。
         // 数不满 anchorRow 个（歌曲开头）时就只算到第一行为止，
         // 当前行自然贴近顶边——与改动前一致。
-        val anchorTopPx = (1..spec.anchorRow)
+        val anchorTopPx = (1..anchorRow)
             .map { anchorIndex - it }
             .takeWhile { it >= 0 }
             .sumOf { rows[it].nominalHeightPx(density).toDouble() }
@@ -409,7 +422,11 @@ internal fun LyricsScroller(
                         row = rows[index],
                         isCurrent = index == currentIndex,
                         offset = offset,
-                        screenRow = offset + spec.anchorRow,
+                        // 梯度基准必须用**实际**锚点而不是 spec.anchorRow：
+                        // 锚点提了一行，当前行在屏幕上就真的落在第 anchorRow 行，
+                        // 用基准值会让它取到曲线上偏下（更懒）的一点，
+                        // 焦点行的起步比该有的慢半拍。
+                        screenRow = offset + anchorRow,
                         targetOffsetY = targetOffsetY,
                         // 本帧刚产生的窗口补偿量（父级统一算好），
                         // 各行据此在同一起点上开始这趟位移。

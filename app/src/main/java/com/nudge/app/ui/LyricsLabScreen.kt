@@ -239,7 +239,11 @@ fun LyricsLabScreen(onBack: () -> Unit) {
                 range = 0f..6f,
                 steps = 5,
                 display = "第 ${spec.anchorRow + 1} 行",
-                hint = "上方留 ${spec.anchorRow} 行已唱过的做上下文，其余是预读区",
+                // 点明这是不带译文时的基准：预览用的 SAMPLE_ROWS 混了带译文的行，
+                // 实际锚点会自动提一行（见 LyricsAnimSpec.anchorRowFor），
+                // 不说明的话会以为滑块调了没生效。
+                hint = "上方留 ${spec.anchorRow} 行已唱过的做上下文，其余是预读区。" +
+                    "这是无译文时的基准，有译文时自动提到第 ${spec.anchorRowFor(true) + 1} 行",
                 onChange = { v -> updateSpec { it.copy(anchorRow = v.roundToInt()) } },
             )
 
