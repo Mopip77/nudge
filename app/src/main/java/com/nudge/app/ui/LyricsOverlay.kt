@@ -29,6 +29,7 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
@@ -542,7 +543,6 @@ private fun LyricRow(
         durationMillis = spec.settleTweenMs,
         easing = rowEasing,
     )
-    val shiftSpec = scrollSpec
 
     // 窗口滑动的补偿量。
     //
@@ -556,8 +556,8 @@ private fun LyricRow(
     // 歌曲开头 windowStart 恒为 0，这一项恒为 0，走的仍是原来的路径。
     // 窗口滑动的补偿量由父级统一算好传进来（见 LyricsScroller）。
     //
-    // 本行要做的是**接手**：把 pendingShift 加进自己的 shiftAnim 并归零，
-    // 再按自己那条缓动曲线趋近 0。两者相加渲染，交接时屏幕位置不变。
+    // 本行要做的是**接手**：把 pendingShift 记进自己的 carried，
+    // 再按缓动曲线把它推回 0。渲染只读 carried 这一个量。
     //
     // 为什么补偿不能只放在 LaunchedEffect 里算：effect 在组合与布局提交
     // **之后**才跑，于是帧序会变成「窗口变 → 整列瞬间上跳一行并画出去 →
@@ -565,10 +565,9 @@ private fun LyricRow(
     // 「所有字闪一下、像重新 fix position」。父级在组合期同步累加，
     // pendingShift 当帧就参与渲染，整列纹丝不动。
     // key 必须是 shiftEpoch（单调递增的代号），**不能是 pendingShift**：
-    // 父级清零时 pendingShift 会变，effect 跟着重启，正在跑的 animateTo
-    // 被取消，shiftAnim 停在半路回不到 0。下一次换行再叠一层，
+    // 父级清零时 pendingShift 会变，effect 跟着重启，正在跑的动画
+    // 被取消，carried 停在半路回不到 0。下一次换行再叠一层，
     // 位移就逐行累积——整列越来越往下沉，当前行离开锚点行、顶上空出一片。
-    val shiftAnim = remember { Animatable(0f) }
 
     // **吸收要在组合期同步做，不能放在 LaunchedEffect 里。**
     //
@@ -604,16 +603,35 @@ private fun LyricRow(
         absorbedEpoch = shiftEpoch
     }
 
-    // 把 carried 交给 Animatable 跑回 0。animateTo 每帧回调里同步写回
-    // carried，渲染始终只读这一个量。
+    // 把 carried 跑回 0。
+    //
+    // **不能用 Animatable.animateTo**，那是「急」的真正来源。真机逐帧量到：
+    //
+    //   +207ms  LAYOUT        排版跳变（focusLeadMs 的延迟）
+    //   +226ms  ty 跳 156px   整列瞬间位移，跳变**裸露在屏幕上**
+    //   +278ms  ty 才开始动   中间足足 52ms 一帧没出
+    //
+    // 那 52ms 的静止 + 紧接着的突然启动，就是用户说的「从 y1 直接蹦到 y2、
+    // 不是移动过去」。成因是 `LaunchedEffect` 在**组合与布局提交之后**才跑：
+    // 应用跳变的那一帧已经画出去了，animateTo 要到下一个调度点才开始，
+    // 中间这几帧整列就停在跳变后的位置上。
+    //
+    // 改为自己驱动：用 withFrameNanos 在**每一帧**按时间推进进度。
+    // 第一帧就能算出位移，跳变不会有裸露期。这也让 carried 始终是
+    // 组合期可读的普通状态，与上面的同步吸收一致。
     LaunchedEffect(shiftEpoch) {
-        if (carried != 0f) {
-            // 回收必须立刻开始，否则排版跳变会裸露在屏幕上。
-            // 现在 shiftSpec 与 scrollSpec 是同一个（都不带延迟），
-            // 延迟统一由排版侧的 layoutIndex 承担。
-            shiftAnim.snapTo(carried)
-            shiftAnim.animateTo(targetValue = 0f, animationSpec = shiftSpec) {
-                carried = value
+        val from = carried
+        if (from != 0f) {
+            val durationMs = spec.settleTweenMs.toFloat()
+            var startNanos = 0L
+            while (true) {
+                val now = withFrameNanos { it }
+                if (startNanos == 0L) startNanos = now
+                val elapsed = (now - startNanos) / 1_000_000f
+                if (elapsed >= durationMs) break
+                // 与 scrollSpec 用同一条缓动曲线：两条路径的手感必须一致，
+                // 否则唱到窗口开始滑动那一行时会突然变一下。
+                carried = from * (1f - rowEasing.transform(elapsed / durationMs))
             }
             carried = 0f
         }
