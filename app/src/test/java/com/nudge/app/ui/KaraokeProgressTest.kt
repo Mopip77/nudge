@@ -142,6 +142,31 @@ class KaraokeProgressTest {
         assertEquals(9, KaraokeProgress.revealAt(withZero, 1600L).sungChars)
     }
 
+
+    /**
+     * **亮暗只有一条分界，不能有第三档。**
+     *
+     * 渲染侧按 `sungChars` 与 active 区间算出**一个**边界，边界左边全亮、
+     * 右边全暗。早先渲染成两个矩形（从 sungChars 到行尾一个、正在唱的词
+     * 未揭示部分再一个），两者在该词的尾巴上**重叠**，`DstOut` 叠两次是
+     * 相乘——未唱 0.3 变成 0.7×0.7 → **0.09**，观感是「词一进入高亮先
+     * 突然变得比未唱还暗，扫一遍后再跳到全亮」。
+     *
+     * 这条钉住的是数据侧的前提：`activeStart` 恒等于 `sungChars`，
+     * 于是渲染侧能把两者合成一条边界，不必也不该画两个矩形。
+     */
+    @Test
+    fun `active 区间恒从已唱末尾开始_渲染侧才能合成单一边界`() {
+        for (ms in 900L..2100L step 3) {
+            val r = KaraokeProgress.revealAt(words, ms)
+            assertEquals(
+                "在 ${ms}ms：activeStart 必须等于 sungChars，否则渲染会重复压暗",
+                r.sungChars,
+                r.activeStart,
+            )
+        }
+    }
+
     @Test
     fun `空时间表恒为零`() {
         val r = KaraokeProgress.revealAt(emptyList(), 1234L)

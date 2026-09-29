@@ -28,6 +28,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -195,14 +196,32 @@ private fun rememberKaraokeReveal(
 
     val state = remember { mutableStateOf(KaraokeReveal(0, 0, 0, 0f)) }
 
-    // key 含 words：换行/换歌要立刻重新对齐，不能残留上一行的进度。
-    // 含 isPlaying：暂停时退出循环，恢复时重新对齐（暂停期间播放器的
-    // positionUpdateTimeMs 不再推进，继续自增会让扫光跑飞）。
-    LaunchedEffect(words, track.isPlaying, track.mediaId, revealFraction) {
+    // **key 必须是「这是哪一行」的稳定标识，不能是 words 这个 List 本身。**
+    //
+    // `rows` 会因为译文开关、歌词重新加载等原因重建，于是每次都是一个新的
+    // List 实例；而 `track` 更是**每秒被轮询重建一次**。任何一个进 key 都会
+    // 让这条 effect 在**同一行唱到一半时重启**——重启时 baseMs 重新采样、
+    // startNanos 归零，扫光就从这一行的开头再走一遍。
+    //
+    // 真机实测：12 秒内重启两次，两次都是 `词数=13`（同一行），
+    // baseMs 从 9629 跳到 18459——正是用户看到的「四个词走完，整行又来一遍」。
+    //
+    // 取首词的起始时刻作标识：它在一首歌里唯一且稳定，换行/换歌必变，
+    // 而 List 重建时不变。mediaId 仍要带上（不同歌可能撞同一个时间戳）。
+    val lineKey = words?.firstOrNull()?.startMs
+
+    // effect 不再 key 在 words 上，直接捕获它就可能读到上一次组合的实例。
+    // 用 rememberUpdatedState 让循环里始终读到最新的一份——内容相同时
+    // 这不改变任何行为，只是消掉「同一行但 List 被重建」时的陈旧引用。
+    val latestWords by rememberUpdatedState(words)
+
+    // isPlaying 进 key 是必要的：暂停时要退出循环，恢复时重新对齐
+    // （暂停期间播放器的 positionUpdateTimeMs 不再推进，继续自增会跑飞）。
+    LaunchedEffect(lineKey, track.isPlaying, track.mediaId, revealFraction) {
         if (!track.isPlaying) {
             // 暂停：按当前位置定格一次，不再推进
             state.value = KaraokeProgress.revealAt(
-                words,
+                latestWords.orEmpty(),
                 track.currentPositionMs(SystemClock.elapsedRealtime()),
                 revealFraction,
             )
@@ -216,8 +235,11 @@ private fun rememberKaraokeReveal(
             withFrameNanos { frameNanos ->
                 if (startNanos == 0L) startNanos = frameNanos
                 val elapsedMs = (frameNanos - startNanos) / 1_000_000L
-                state.value =
-                    KaraokeProgress.revealAt(words, baseMs + elapsedMs, revealFraction)
+                state.value = KaraokeProgress.revealAt(
+                    latestWords.orEmpty(),
+                    baseMs + elapsedMs,
+                    revealFraction,
+                )
             }
         }
     }
@@ -654,25 +676,32 @@ private fun Modifier.karaokeSweep(
     // 现在恒为 1 次 drawContent + 若干个纯色矩形，矩形是最便宜的绘制。
     drawContent()
 
-    if (state.sungChars >= total && state.activeEnd <= state.activeStart) return@drawWithContent
+    // **揭示边界**：已点亮到的字符位置（含正在揭示的词的那一部分）。
+    // 未唱区从这里一直到行尾，**只压暗一次**。
+    //
+    // 早先是分两段画的：先从 `sungChars`（正在唱的词的**起点**）压暗到
+    // 行尾，再单独压暗该词尚未揭示的尾巴——两个矩形在该词的尾巴上**重叠**，
+    // `DstOut` 叠两次是相乘：未唱 0.3 会变成 0.7×0.7 → **0.09**。
+    // 观感就是「词一进入高亮先突然变得比未唱还暗，扫一遍后再跳到全亮」。
+    // 现在只有一条边界、一次压暗，该词的尾巴与后面的词是同一个亮度。
+    val anchorChar = state.sungChars.coerceIn(0, total)
+    if (anchorChar >= total && state.activeEnd <= state.activeStart) return@drawWithContent
 
-    // 压暗「未唱」的区域。已唱区什么都不叠，于是保持文字原色——
-    // 不能靠叠白色提亮，那会把字往白拉，浅色主题下会变成灰。
-    val sungEnd = state.sungChars.coerceIn(0, total)
-    val startLine = if (sungEnd >= total) layout.lineCount - 1 else layout.getLineForOffset(sungEnd)
+    val startLine = layout.getLineForOffset(anchorChar.coerceAtMost(total - 1))
+    // 揭示边界的像素位置。getHorizontalPosition 给的是**实际**位置——
+    // 居中对齐时每一折行的起点都不同，按整行宽度线性猜必然错（折行是常态）。
+    //
+    // 在**像素**上插值而不是在字符索引上：后者会让边界一个字母一个字母地跳，
+    // 英文单词只有三四个字母时就退化成阶梯，词内揭示的「连续」就没有了。
+    val edgeX = karaokeEdgeX(layout, state, total, startLine)
 
     for (lineIndex in startLine until layout.lineCount) {
         val top = layout.getLineTop(lineIndex)
         val bottom = layout.getLineBottom(lineIndex)
         val lineRight = layout.getLineRight(lineIndex)
-        // 本折行未唱区的左边界：已唱的最后一个字符就在这一折行时从它起算，
-        // 再往下的折行整条都没唱。
-        //
-        // getHorizontalPosition 给的是**实际**像素位置——居中对齐时每一
-        // 折行的起点都不同，按整行宽度线性猜必然错（折行是这里的常态）。
-        val left = if (lineIndex == startLine && sungEnd < total) {
-            layout.getHorizontalPosition(sungEnd, usePrimaryDirection = true)
-                .coerceIn(layout.getLineLeft(lineIndex), lineRight)
+        // 边界所在的折行从边界起压暗，再往下的折行整条都没唱
+        val left = if (lineIndex == startLine) {
+            edgeX.coerceIn(layout.getLineLeft(lineIndex), lineRight)
         } else {
             layout.getLineLeft(lineIndex)
         }
@@ -686,41 +715,44 @@ private fun Modifier.karaokeSweep(
             blendMode = BlendMode.DstOut,
         )
     }
+}
 
-    // **正在唱的那个词**：在它自己的字符区间内做一次快速的左→右揭示。
-    //
-    // 这是「按词高亮」与「逐像素扫光」的折中，也是用户拍板的形态：
-    // 整词一次点亮在词长中位数 450ms 的节奏下是一跳一跳的，
-    // 而逐像素匀速推进又与「词」这个语义单位脱节。词内快速揭示
-    // 兼顾两者——节奏锚在词上，但每次点亮本身是连续的。
-    if (state.activeEnd > state.activeStart && state.activeProgress < 1f) {
-        val aStart = state.activeStart.coerceIn(0, total)
-        val aEnd = state.activeEnd.coerceIn(0, total)
-        val aLine = layout.getLineForOffset(aStart)
-        // 词跨折行时只处理它在本折行的那一段：跨行的词极少（词内不断行），
-        // 真出现时下一折行的部分留给下一帧的 sungEnd 覆盖，不会漏画。
-        val wordLeft = layout.getHorizontalPosition(aStart, usePrimaryDirection = true)
-        val wordRight = if (layout.getLineForOffset(aEnd.coerceAtLeast(1) - 1) == aLine) {
-            layout.getHorizontalPosition(aEnd, usePrimaryDirection = true)
-        } else {
-            layout.getLineRight(aLine)
-        }
-        val lo = minOf(wordLeft, wordRight)
-        val hi = maxOf(wordLeft, wordRight)
-        if (hi > lo) {
-            // 揭示边界：词内从左到右推进。到 1 时整词已全亮。
-            val edge = lo + (hi - lo) * state.activeProgress.coerceIn(0f, 1f)
-            if (hi > edge) {
-                drawRect(
-                    color = Color.Black,
-                    alpha = dim,
-                    topLeft = Offset(edge, layout.getLineTop(aLine)),
-                    size = Size(hi - edge, layout.getLineBottom(aLine) - layout.getLineTop(aLine)),
-                    blendMode = BlendMode.DstOut,
-                )
-            }
-        }
+/**
+ * 亮暗分界的像素位置。
+ *
+ * 这是**唯一**的分界：左边全亮、右边全暗，没有第三档。正在揭示的词
+ * 只是让它在该词的像素区间内平滑推进——把「已唱」和「正在唱的词」
+ * 分成两个矩形去画，就会在重叠处把亮度乘两次（见 [karaokeSweep]）。
+ *
+ * 只处理边界所在的那一折行：词跨折行极少（词内不断行），真出现时
+ * 取本折行右端，下一折行由下一帧接手。
+ */
+private fun karaokeEdgeX(
+    layout: TextLayoutResult,
+    state: KaraokeReveal,
+    total: Int,
+    line: Int,
+): Float {
+    val lineLeft = layout.getLineLeft(line)
+    val lineRight = layout.getLineRight(line)
+    val anchor = state.sungChars.coerceIn(0, total)
+    val anchorX = layout
+        .getHorizontalPosition(anchor, usePrimaryDirection = true)
+        .coerceIn(lineLeft, lineRight)
+
+    // 没有正在揭示的词：边界就停在已唱的末尾（词与词之间的停顿）
+    if (state.activeEnd <= state.activeStart) return anchorX
+
+    // 正在揭示：在该词的像素区间内按进度插值
+    val wordEnd = state.activeEnd.coerceIn(0, total)
+    val wordEndX = if (layout.getLineForOffset((wordEnd - 1).coerceAtLeast(0)) == line) {
+        layout.getHorizontalPosition(wordEnd, usePrimaryDirection = true)
+            .coerceIn(lineLeft, lineRight)
+    } else {
+        lineRight
     }
+    if (wordEndX <= anchorX) return anchorX
+    return anchorX + (wordEndX - anchorX) * state.activeProgress.coerceIn(0f, 1f)
 }
 
 /**
