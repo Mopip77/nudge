@@ -19,15 +19,32 @@ object LyricsFetcher {
     private const val TIMEOUT_MS = 5000
 
     /**
-     * 接口返回的两份 LRC。[tlyric] 是中文译文，**可空**——大量歌曲没有译文
-     * （中文歌本来就不需要，英文歌也不是都有），此时接口返回的
-     * `tlyric.version` 为 0、`lyric` 为空串。
+     * 接口返回的两套歌词数据。
+     *
+     * [tlyric] 是中文译文，**可空**——大量歌曲没有译文（中文歌本来就不需要，
+     * 英文歌也不是都有），此时接口返回的 `tlyric.version` 为 0、`lyric` 为空串。
+     *
+     * [yrc] 是**逐字**歌词，[ytlrc] 是它配套的译文，两者同样可空：真机抽样
+     * 12 首里只有 5 首有 `yrc`。
+     *
+     * **`(lrc, tlyric)` 与 `(yrc, ytlrc)` 是两套各自自洽、互不同轴的数据**，
+     * 取用时必须整对选择，绝不能交叉组合（依据见 `YrcParser` 的注释）。
+     * 这也是它们在同一个数据类里却分成两对的原因。
      */
-    data class RawLyrics(val lrc: String, val tlyric: String?)
+    data class RawLyrics(
+        val lrc: String,
+        val tlyric: String?,
+        val yrc: String? = null,
+        val ytlrc: String? = null,
+    )
 
     /** 阻塞调用，必须在 IO 线程执行。任何失败返回 null，调用方降级为无歌词。 */
     fun fetchLrc(songId: String): RawLyrics? {
-        val url = "https://music.163.com/api/song/lyric?id=$songId&lv=1&kv=1&tv=-1"
+        // yv / yrv 才会带出逐字歌词（yrc）与它配套的译文（ytlrc）。
+        // 实测加这两个参数是**纯增量**：lrc / tlyric 两个字段不受影响，
+        // 行级路径零风险。早先只要 lv/kv/tv，所以一直拿不到逐字数据。
+        val url = "https://music.163.com/api/song/lyric" +
+            "?id=$songId&lv=1&kv=1&tv=-1&yv=1&ytv=-1&yrv=-1"
         var connection: HttpURLConnection? = null
         return try {
             connection = (URL(url).openConnection() as HttpURLConnection).apply {
@@ -55,7 +72,15 @@ object LyricsFetcher {
                 ?.optString("lyric")
                 ?.takeIf { it.isNotBlank() }
 
-            RawLyrics(lrc, tlyric)
+            // 逐字歌词约四成的歌才有，取不到是常态，由上层回落到行级。
+            val yrc = json.optJSONObject("yrc")
+                ?.optString("lyric")
+                ?.takeIf { it.isNotBlank() }
+            val ytlrc = json.optJSONObject("ytlrc")
+                ?.optString("lyric")
+                ?.takeIf { it.isNotBlank() }
+
+            RawLyrics(lrc, tlyric, yrc, ytlrc)
         } catch (e: Exception) {
             // 无网络、超时、JSON 结构变化都走这里。静默失败，不打扰盲操。
             null

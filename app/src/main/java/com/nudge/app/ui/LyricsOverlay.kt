@@ -28,6 +28,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -39,6 +40,10 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.text.drawText
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.Font
@@ -48,6 +53,11 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.text.TextLayoutResult
+import com.nudge.app.lyrics.LyricWord
 import android.os.SystemClock
 import com.nudge.app.R
 import com.nudge.app.config.LyricsAlignment
@@ -105,7 +115,7 @@ private val LINE_HEIGHT = LyricRowData.LINE_HEIGHT_DP.dp
  * 统一字号顺带消掉了一串因放大衍生的补偿逻辑——排版宽度反向收窄、
  * 当前行行高补足、scale 与 blur 的顺序约束，都不再需要。
  */
-private val FONT_SIZE = 24.sp
+private val FONT_SIZE = 27.sp
 
 /**
  * 译文字号，比原文小一档。
@@ -113,6 +123,10 @@ private val FONT_SIZE = 24.sp
  * 小一号是为了让译文明确从属于原文而不与之争焦点（对齐 Apple Music）。
  * 不另降透明度：Row 是动画的原子单位，原文与译文共享同一个 alpha，
  * 再单独压暗译文会让远处的行叠乘到几乎看不见，而那时原文还读得清。
+ *
+ * 原文放大到 27sp 时**这里刻意不跟着放大**：比值从 0.71 收到 0.63，
+ * 才落进 Apple Music 的 0.6~0.65。早先两者太接近，「从属」只是写在
+ * 注释里的意图，视觉上并没有真的做到。
  */
 private val TRANSLATION_FONT_SIZE = 17.sp
 
@@ -151,6 +165,93 @@ private val LyricFont = FontFamily(
  * 填不满区域——这块区域实际能放约 12 行。
  */
 private const val FALLBACK_VISIBLE_ROWS = 6
+
+/**
+ * 当前行的逐字扫光时钟。
+ *
+ * 返回一个 lambda，读它得到「已唱到第几个字符」。**刻意返回 lambda 而不是
+ * Float**：这样进度只在 `drawWithContent` 里被读到，Compose 据此把它的变化
+ * 降级成**只重绘**，不触发重组或重测量——与项目里 `graphicsLayer` 位移
+ * 「走绘制阶段」是同一个口径。直接返回 Float 会让整行每帧重组。
+ *
+ * ## 为什么不把 LYRIC_TICK_MS 提到 16ms
+ *
+ * 那会让 [LyricsOverlay] 每帧重组一次：`indexAt` 的二分、`rows` 的 remember
+ * 校验、整个窗口的重组判断全跟着跑。而这块区域**同时是触摸板**，
+ * 会与手势识别抢同一帧的预算。所以扫光自己在绘制阶段跑一条 60fps 的时钟，
+ * 全局的 100ms tick 原封不动。
+ *
+ * ## 时基
+ *
+ * 起点用一次 [TrackInfo.currentPositionMs] 对齐，之后靠帧时间自增——
+ * **每行只采样一次，不是每帧一次**。该时钟本身已是
+ * `positionMs + elapsed × playbackSpeed` 的外推值，在播放器两次回推之间
+ * 连续且单调，正适合做扫光的时基。
+ *
+ * 暂停时（`isPlaying == false`）循环挂起，扫光停在原地。
+ */
+@Composable
+private fun rememberKaraokeReveal(
+    words: List<LyricWord>?,
+    track: TrackInfo?,
+    revealFraction: Float,
+    liftSpec: KaraokeLiftSpec,
+): (() -> KaraokeFrame)? {
+    if (words.isNullOrEmpty() || track == null) return null
+
+    val state = remember { mutableStateOf(KaraokeFrame.EMPTY) }
+
+    // **key 必须是「这是哪一行」的稳定标识，不能是 words 这个 List 本身。**
+    //
+    // `rows` 会因为译文开关、歌词重新加载等原因重建，于是每次都是一个新的
+    // List 实例；而 `track` 更是**每秒被轮询重建一次**。任何一个进 key 都会
+    // 让这条 effect 在**同一行唱到一半时重启**——重启时 baseMs 重新采样、
+    // startNanos 归零，扫光就从这一行的开头再走一遍。
+    //
+    // 真机实测：12 秒内重启两次，两次都是 `词数=13`（同一行），
+    // baseMs 从 9629 跳到 18459——正是用户看到的「四个词走完，整行又来一遍」。
+    //
+    // 取首词的起始时刻作标识：它在一首歌里唯一且稳定，换行/换歌必变，
+    // 而 List 重建时不变。mediaId 仍要带上（不同歌可能撞同一个时间戳）。
+    val lineKey = words?.firstOrNull()?.startMs
+
+    // effect 不再 key 在 words 上，直接捕获它就可能读到上一次组合的实例。
+    // 用 rememberUpdatedState 让循环里始终读到最新的一份——内容相同时
+    // 这不改变任何行为，只是消掉「同一行但 List 被重建」时的陈旧引用。
+    val latestWords by rememberUpdatedState(words)
+
+    // isPlaying 进 key 是必要的：暂停时要退出循环，恢复时重新对齐
+    // （暂停期间播放器的 positionUpdateTimeMs 不再推进，继续自增会跑飞）。
+    // 升起与扫光**共用这一条时钟**，同一个 positionMs 同时算出两者。
+    // 各建一条的话，两条 withFrameNanos 循环的帧时间会有半帧的错位，
+    // 而「光先走、字后起」的那个时间差正是靠它们同源才精确的。
+    LaunchedEffect(lineKey, track.isPlaying, track.mediaId, revealFraction, liftSpec) {
+        fun frameAt(positionMs: Long) = KaraokeFrame(
+            reveal = KaraokeProgress.revealAt(latestWords.orEmpty(), positionMs, revealFraction),
+            lift = KaraokeLift.liftAt(latestWords.orEmpty(), positionMs, liftSpec),
+        )
+
+        if (!track.isPlaying) {
+            // 暂停：按当前位置定格一次，不再推进。升起也跟着定格——
+            // 它是纯时间函数，定格自然成立，不必额外处理。
+            state.value = frameAt(track.currentPositionMs(SystemClock.elapsedRealtime()))
+            return@LaunchedEffect
+        }
+
+        // 对齐一次，之后靠帧时间自增
+        val baseMs = track.currentPositionMs(SystemClock.elapsedRealtime())
+        var startNanos = 0L
+        while (true) {
+            withFrameNanos { frameNanos ->
+                if (startNanos == 0L) startNanos = frameNanos
+                val elapsedMs = (frameNanos - startNanos) / 1_000_000L
+                state.value = frameAt(baseMs + elapsedMs)
+            }
+        }
+    }
+
+    return { state.value }
+}
 
 /**
  * 触摸板底下的歌词背景层。
@@ -195,6 +296,7 @@ fun LyricsOverlay(
             LyricRowData(
                 text = line.text,
                 translation = line.translation.takeIf { showTranslation },
+                words = line.words,
             )
         }
     }
@@ -205,6 +307,7 @@ fun LyricsOverlay(
         alignment = alignment,
         spec = spec,
         textColor = textColor,
+        track = track,
         modifier = modifier,
     )
 }
@@ -225,6 +328,11 @@ internal fun LyricsScroller(
     alignment: LyricsAlignment,
     spec: LyricsAnimSpec,
     textColor: Color? = null,
+    /**
+     * 逐字扫光的时基来源。null 表示不做扫光（实验室用假数据时可不传，
+     * 那里另有自己的时钟）——此时即便有字级时间表也只做整行高亮。
+     */
+    track: TrackInfo? = null,
     modifier: Modifier = Modifier,
 ) {
     if (rows.isEmpty()) return
@@ -264,6 +372,17 @@ internal fun LyricsScroller(
     LaunchedEffect(rows) { layoutIndex = focusIndex }
 
     val anchorIndex = layoutIndex.coerceIn(0, rows.lastIndex)
+
+    // 扫光时钟**只为当前行建一个**，而不是每行各建一个：非当前行不扫光，
+    // 给它们各挂一条 withFrameNanos 循环纯属浪费（窗口里有十几行）。
+    // currentIndex 为 -1（前奏期）时 words 取到 null，时钟自然不启动。
+    val karaokeWords = rows.getOrNull(currentIndex)?.words
+    val karaokeReveal = rememberKaraokeReveal(
+        words = karaokeWords,
+        track = track,
+        revealFraction = spec.karaokeRevealFraction,
+        liftSpec = spec.karaokeLift,
+    )
 
     // 锚点行号按**这首歌实际有没有译文**定，而不是看译文开关。
     // 开关开着但这首歌没有译文时（网易云的纯中文歌常态），行高仍是 52dp，
@@ -490,6 +609,9 @@ internal fun LyricsScroller(
                         alignment = alignment,
                         spec = spec,
                         textColor = lyricColor,
+                        // 扫光只给当前行：其余行是整行同亮度的上下文，
+                        // 给它们也扫光会让「唱到哪」这个信号出现十几份。
+                        karaokeReveal = if (index == currentIndex) karaokeReveal else null,
                         onHeightMeasured = { rowHeights[index] = it },
                     )
                 }
@@ -497,6 +619,291 @@ internal fun LyricsScroller(
         }
 
     }
+}
+
+/**
+ * 逐字高亮：已唱的词保持原色，未唱的压暗，**边界落在词与词之间**。
+ *
+ * ## 单位是词，不是像素
+ *
+ * 第一版是匀速逐像素推进的扫光，真机实测「一卡一卡」，两个原因：
+ *
+ * 1. **与语义单位脱节**：词长中位数 450ms（真机量 Remedy 一曲），
+ *    光会长时间停在某个词的中间，看着像卡住。
+ * 2. **每帧最多 4 次 drawContent + 4 个 saveLayer**（压暗底一次、
+ *    逐折行重画已唱区各一次）。每个 saveLayer 都要分配并合成一个离屏
+ *    缓冲，全宽文本节点上开销很大。
+ *
+ * 现在恒为 **1 次 drawContent + 若干纯色矩形**：整行画一遍原色，
+ * 再在未唱区叠 `DstOut` 的压暗矩形。矩形是最便宜的绘制，
+ * 且已唱区什么都不叠，于是天然保持文字原色——不能靠叠白色提亮，
+ * 那会把字往白拉，浅色主题下会变成灰。
+ *
+ * 词内仍有一次快速揭示（见 [LyricsAnimSpec.karaokeRevealFraction]），
+ * 否则整词一次点亮在 450ms 的节奏下仍是一跳一跳的。
+ *
+ * ## 折行必须逐折行处理
+ *
+ * 朴素做法是整块套一个横向渐变。那在**不折行**时是对的，一旦折行就会
+ * 同时切两个折行——唱到一半时上行右半暗、下行右半也暗。那不是「不够
+ * 精细」，而是看着像渲染 bug。而折行在这里是常态（`maxLines = 3`、
+ * 字号 27sp 偏大），实验室的假歌词里本就专门放了必然折行的样本。
+ *
+ * 所以用 [layout] 按**字符索引**查实际像素位置（`getHorizontalPosition`）：
+ * 居中对齐时每一折行的起点都不同，按整行宽度线性猜必然错。
+ *
+ * ## 兜底
+ *
+ * [layout] 尚未测量（首帧）时整行按已唱处理，即维持原有的整行高亮。
+ * 宁可不高亮，也不要闪一下——逐字是增强，不该让基础功能退化。
+ */
+private fun Modifier.karaokeSweep(
+    frame: () -> KaraokeFrame,
+    layout: TextLayoutResult?,
+    unsungAlpha: Float,
+    /**
+     * 整行升起的缩放，0..1。换行时由 1 动到 0，让抬起的字符平滑落回基线。
+     * 非当前行恒为 0，逐字符绘制整条路径都不会走。
+     */
+    liftScale: () -> Float,
+): Modifier = this.drawWithContent {
+    if (layout == null) {
+        // 还没测量出来：整行按已唱画，退化为原有的整行高亮。
+        // 宁可不扫光，也不要闪一下——扫光是增强，不该让基础功能退化。
+        drawContent()
+        return@drawWithContent
+    }
+
+    val state = frame().reveal
+    val total = layout.layoutInput.text.length
+
+    // 逐字符绘制只在真的有位移时才走。没位移时回到改动前那条
+    // 「1 次 drawContent + 压暗矩形」的路径——它便宜得多，
+    // 而这块区域同时是触摸板，省下的帧预算直接关系到手势响应。
+    val scale = liftScale().coerceIn(0f, 1f)
+    val lift = if (scale > 0.001f) frame().lift else null
+    if (lift != null) {
+        drawLiftedChars(layout, lift, scale, state, unsungAlpha)
+        return@drawWithContent
+    }
+
+    val dim = (1f - unsungAlpha).coerceIn(0f, 1f)
+    if (dim <= 0f) {
+        drawContent()
+        return@drawWithContent
+    }
+
+    // **整行只画一次文本**，然后在「未唱」的区域上叠一层压暗的遮罩。
+    //
+    // 早先是反过来的：先按未唱亮度画一遍底，再逐折行 clip + saveLayer
+    // 重画已唱的部分。那样一帧最多要 **4 次 drawContent + 4 个 saveLayer**
+    // （底 1 次 + 每折行 1 次，maxLines=3），每个 saveLayer 都是一次离屏
+    // 缓冲的分配与合成，全宽文本节点上开销很大——真机观感就是「一卡一卡」。
+    // 现在恒为 1 次 drawContent + 若干个纯色矩形，矩形是最便宜的绘制。
+    drawContent()
+
+    // **揭示边界**：已点亮到的字符位置（含正在揭示的词的那一部分）。
+    // 未唱区从这里一直到行尾，**只压暗一次**。
+    //
+    // 早先是分两段画的：先从 `sungChars`（正在唱的词的**起点**）压暗到
+    // 行尾，再单独压暗该词尚未揭示的尾巴——两个矩形在该词的尾巴上**重叠**，
+    // `DstOut` 叠两次是相乘：未唱 0.3 会变成 0.7×0.7 → **0.09**。
+    // 观感就是「词一进入高亮先突然变得比未唱还暗，扫一遍后再跳到全亮」。
+    // 现在只有一条边界、一次压暗，该词的尾巴与后面的词是同一个亮度。
+    val anchorChar = state.sungChars.coerceIn(0, total)
+    if (anchorChar >= total && state.activeEnd <= state.activeStart) return@drawWithContent
+
+    val startLine = layout.getLineForOffset(anchorChar.coerceAtMost(total - 1))
+    // 揭示边界的像素位置。getHorizontalPosition 给的是**实际**位置——
+    // 居中对齐时每一折行的起点都不同，按整行宽度线性猜必然错（折行是常态）。
+    //
+    // 在**像素**上插值而不是在字符索引上：后者会让边界一个字母一个字母地跳，
+    // 英文单词只有三四个字母时就退化成阶梯，词内揭示的「连续」就没有了。
+    val edgeX = karaokeEdgeX(layout, state, total, startLine)
+
+    for (lineIndex in startLine until layout.lineCount) {
+        val top = layout.getLineTop(lineIndex)
+        val bottom = layout.getLineBottom(lineIndex)
+        val lineRight = layout.getLineRight(lineIndex)
+        // 边界所在的折行从边界起压暗，再往下的折行整条都没唱
+        val left = if (lineIndex == startLine) {
+            edgeX.coerceIn(layout.getLineLeft(lineIndex), lineRight)
+        } else {
+            layout.getLineLeft(lineIndex)
+        }
+        if (lineRight <= left) continue
+
+        drawRect(
+            color = Color.Black,
+            alpha = dim,
+            topLeft = Offset(left, top),
+            size = Size(lineRight - left, bottom - top),
+            blendMode = BlendMode.DstOut,
+        )
+    }
+}
+
+/**
+ * 逐字符绘制：每个字符按各自的升起量上移，已唱/未唱各自压暗。
+ *
+ * ## 为什么是「整块重画 + 裁到一个字符」而不是逐字形绘制
+ *
+ * Compose 没有「画 TextLayoutResult 的第 i 个字符」这个 API。可行的做法
+ * 只有把整块 layout 重画一遍、用 [clipRect] 裁到该字符的像素区间，
+ * 再 [translate] 到它该在的位置。**排版完全交给已经算好的
+ * [TextLayoutResult]**——字形、字距、折行、中英混排的断行规则全部沿用，
+ * 我们只是把它切开、各自挪一下。
+ *
+ * 自己按字形绘制（取 Paint 逐字 drawText）看着更"直接"，但要重新处理
+ * 字距调整、连字、双向文本，而这些正是文本排版最容易出偏差的地方——
+ * 中文标点的压缩、英文的 kerning 一旦自己算就必然与未升起时对不齐，
+ * 换行落回的那一刻会看到整行字微微错位。
+ *
+ * ## 成本
+ *
+ * 一行 N 个字符就是 N 次 drawText，每次都被裁到一个字符宽。裁切本身是
+ * 便宜的（纯 clip，不开离屏缓冲），真正的成本是 N 次绘制调用。
+ * **只有当前行走这条路径**，其余行仍是一次 drawContent，
+ * 所以整屏十几行里只有一行付这个代价。
+ *
+ * [liftScale] 为 0 时调用方根本不会进来（见 [karaokeSweep]），
+ * 于是"关掉升起"与改动前的成本完全一致。
+ */
+private fun DrawScope.drawLiftedChars(
+    layout: TextLayoutResult,
+    lift: (Int) -> Float,
+    liftScale: Float,
+    state: KaraokeReveal,
+    unsungAlpha: Float,
+) {
+    val total = layout.layoutInput.text.length
+    if (total <= 0) return
+
+    // 亮暗分界仍然只有**一条**，口径与 karaokeSweep 完全一致：
+    // 边界左边全亮、右边按 unsungAlpha 压暗。这里把它落到每个字符上——
+    // 字符整体落在边界左边就全亮，右边就压暗，跨越边界的那一个
+    // （正在揭示的词里的某个字）按边界位置再裁一刀（见下）。
+    val edgeLine = layout.getLineForOffset(
+        state.sungChars.coerceIn(0, (total - 1).coerceAtLeast(0))
+    )
+    val edgeX = karaokeEdgeX(layout, state, total, edgeLine)
+
+    for (i in 0 until total) {
+        val line = layout.getLineForOffset(i)
+        // 字符的左右边界。getHorizontalPosition 给的是**实际**位置，
+        // 折行与居中对齐时每一折行的起点都不同，按整行宽度线性猜必然错。
+        val left = layout.getHorizontalPosition(i, usePrimaryDirection = true)
+        val right = if (i + 1 <= total && layout.getLineForOffset((i + 1).coerceAtMost(total - 1)) == line) {
+            layout.getHorizontalPosition(i + 1, usePrimaryDirection = true)
+        } else {
+            layout.getLineRight(line)
+        }
+        if (right <= left) continue
+
+        val dy = -lift(i) * liftScale * density
+        val top = layout.getLineTop(line)
+        val bottom = layout.getLineBottom(line)
+
+        // **裁切框严格等于这个字符的单元格**（上边只放宽它自己实际的升起量）。
+        //
+        // 这里栽过一次，真机截图 + 逐列量亮度才看出来：早先上下各放宽一个
+        // 固定的 64px「余量」，本意是别把升起的字顶切掉。但 drawText 画的是
+        // **整块 layout**（三个折行都在里面），裁切框一旦越过本折行的上下沿，
+        // 相邻折行的字就从这道缝里漏进来、被重复画一遍。
+        // 压暗矩形同样跨了折行，`DstOut` 是相乘的，于是**越靠前的已唱文字
+        // 被压得越暗**——实测第 1 折行 151、第 2 折行已唱区 205、
+        // 正在升起的词 255，整整三档，正是 CLAUDE.md 里记的
+        // 「一个词要闪三段」那类缺陷的同源版本。
+        //
+        // 所以纵向只放宽 `-dy`（正好够这个字自己升起的量，恒不越过
+        // 上一折行的基线），横向严格卡死。
+        val slack = if (dy < 0f) -dy else 0f
+        clipRect(left = left, top = top - slack, right = right, bottom = bottom) {
+            translate(top = dy) {
+                drawText(layout)
+            }
+            // 压暗矩形画在**同一个 clip 之内**，于是它与裁切框同界，
+            // 绝不可能盖到邻字或邻折行上。每个字符因此只被压暗一次。
+            val dim = charDim(i, left, right, edgeX, line, edgeLine, unsungAlpha)
+            if (dim > 0f) {
+                drawRect(
+                    color = Color.Black,
+                    alpha = dim,
+                    topLeft = Offset(left, top - slack),
+                    size = Size(right - left, (bottom - top) + slack),
+                    blendMode = BlendMode.DstOut,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 第 [index] 个字符该压暗多少（0 = 全亮）。
+ *
+ * 分界的像素位置是 [edgeX]（在第 [edgeLine] 折行上）。三种情形：
+ * 整体在分界之前 → 全亮；在分界之后 → 全压暗；
+ * **恰好跨越分界** → 按分界在这个字符内的位置按比例压——
+ * 这保住了「边界在像素上平滑推进」这条，否则边界会一个字一个字地跳，
+ * 英文单词只有三四个字母时就退化成阶梯。
+ */
+private fun charDim(
+    index: Int,
+    left: Float,
+    right: Float,
+    edgeX: Float,
+    line: Int,
+    edgeLine: Int,
+    unsungAlpha: Float,
+): Float {
+    val dim = (1f - unsungAlpha).coerceIn(0f, 1f)
+    if (dim <= 0f) return 0f
+    // 分界所在折行之前的折行整条都唱过了，之后的整条都没唱
+    if (line < edgeLine) return 0f
+    if (line > edgeLine) return dim
+    if (right <= edgeX) return 0f
+    if (left >= edgeX) return dim
+    // 跨越分界：按分界切进这个字符的比例插值
+    val unsungPart = (right - edgeX) / (right - left)
+    return dim * unsungPart.coerceIn(0f, 1f)
+}
+
+/**
+ * 亮暗分界的像素位置。
+ *
+ * 这是**唯一**的分界：左边全亮、右边全暗，没有第三档。正在揭示的词
+ * 只是让它在该词的像素区间内平滑推进——把「已唱」和「正在唱的词」
+ * 分成两个矩形去画，就会在重叠处把亮度乘两次（见 [karaokeSweep]）。
+ *
+ * 只处理边界所在的那一折行：词跨折行极少（词内不断行），真出现时
+ * 取本折行右端，下一折行由下一帧接手。
+ */
+private fun karaokeEdgeX(
+    layout: TextLayoutResult,
+    state: KaraokeReveal,
+    total: Int,
+    line: Int,
+): Float {
+    val lineLeft = layout.getLineLeft(line)
+    val lineRight = layout.getLineRight(line)
+    val anchor = state.sungChars.coerceIn(0, total)
+    val anchorX = layout
+        .getHorizontalPosition(anchor, usePrimaryDirection = true)
+        .coerceIn(lineLeft, lineRight)
+
+    // 没有正在揭示的词：边界就停在已唱的末尾（词与词之间的停顿）
+    if (state.activeEnd <= state.activeStart) return anchorX
+
+    // 正在揭示：在该词的像素区间内按进度插值
+    val wordEnd = state.activeEnd.coerceIn(0, total)
+    val wordEndX = if (layout.getLineForOffset((wordEnd - 1).coerceAtLeast(0)) == line) {
+        layout.getHorizontalPosition(wordEnd, usePrimaryDirection = true)
+            .coerceIn(lineLeft, lineRight)
+    } else {
+        lineRight
+    }
+    if (wordEndX <= anchorX) return anchorX
+    return anchorX + (wordEndX - anchorX) * state.activeProgress.coerceIn(0f, 1f)
 }
 
 /**
@@ -514,6 +921,12 @@ private fun LyricRow(
     alignment: LyricsAlignment,
     spec: LyricsAnimSpec,
     textColor: Color,
+    /**
+     * 逐字状态（扫光 + 升起）的读取器，null 表示这一行不做逐字效果
+     * （非当前行、或这首歌没有逐字数据）。传 lambda 而非值是为了让它
+     * 只在绘制阶段被读到——见 [rememberKaraokeReveal]。
+     */
+    karaokeReveal: (() -> KaraokeFrame)?,
     onHeightMeasured: (Int) -> Unit,
 ) {
     // 每行各自追 targetOffsetY，**时长相同、缓动曲线不同**：
@@ -629,6 +1042,27 @@ private fun LyricRow(
         label = "lyricBlur",
     )
 
+    // 整行的升起缩放：当前行为 1，失焦后动到 0，让抬起的字符**平滑落回基线**。
+    //
+    // 换行时整行一起落，而不是每个字符自己落回去：后者会让一行里的字
+    // 此起彼伏，像在抖。而硬切回 0 更糟——换行本来就是整列在滚动的时刻，
+    // 多一个跳变很容易被读成滚动出了问题。
+    //
+    // 时序复用 fadeAnimMs / focusDelayMs，不引入新参数：落回与淡出、
+    // 去模糊是同一件事（焦点移开）的三个侧面，各给一套时序只会让它们错开。
+    // 用非委托形式接住 State：委托（by）会在**组合期**读取，
+    // 于是整行每帧重组；持有 State 本身、在 drawWithContent 里才 .value，
+    // Compose 据此把它的变化降级成只重绘。
+    val liftScale = animateFloatAsState(
+        targetValue = if (isCurrent && spec.karaokeLiftEnabled) 1f else 0f,
+        animationSpec = tween(
+            durationMillis = spec.fadeAnimMs,
+            delayMillis = spec.focusDelayMs,
+            easing = FastOutSlowInEasing,
+        ),
+        label = "lyricLift",
+    )
+
     // 高度由内容决定而非写死：长句折行后要撑开，截断成省略号会让歌词直接读不成句。
     // 折行带来的行高不一由外层按实测值累加吸收（见 rowHeights）。
     // heightIn 保证短句仍占满一个标准行高，避免行距忽大忽小。
@@ -687,6 +1121,11 @@ private fun LyricRow(
                 .padding(horizontal = SIDE_PADDING, vertical = 6.dp)
                 .graphicsLayer { this.alpha = animatedAlpha },
         ) {
+            // 逐字扫光只作用于当前行，且只在这首歌有字级时间表时才启用。
+            // 拿不到时 karaokeChars 恒为 null，下面退化为整行同亮度——
+            // 与加逐字支持之前完全一致（约六成的歌走这条路）。
+            var textLayout by remember { mutableStateOf<TextLayoutResult?>(null) }
+
             Text(
                 text = row.text,
                 // 折行的句子里，第二行也要跟着靠左，所以对齐要落在 textAlign 上
@@ -705,7 +1144,28 @@ private fun LyricRow(
                 maxLines = 3,
                 overflow = TextOverflow.Ellipsis,
                 lineHeight = FONT_SIZE * 1.3f,
-                modifier = Modifier.fillMaxWidth(),
+                // 扫光要按**字符索引**查实际像素位置，所以必须接住布局结果。
+                // 折行时每一折行的起止 x 都不同（尤其居中对齐），
+                // 没有它就只能按整行宽度线性猜，那在折行时必然错。
+                onTextLayout = { textLayout = it },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .then(
+                        if (karaokeReveal != null) {
+                            Modifier.karaokeSweep(
+                                frame = karaokeReveal,
+                                layout = textLayout,
+                                unsungAlpha = spec.karaokeUnsungAlpha,
+                                // 传 lambda 而非值：liftScale 每帧都在变，
+                                // 直接传值会让整行每帧重组，而这块区域
+                                // 同时是触摸板。读在 drawWithContent 里
+                                // Compose 就只重绘——口径同 karaokeReveal。
+                                liftScale = { liftScale.value },
+                            )
+                        } else {
+                            Modifier
+                        }
+                    ),
             )
 
             row.translation?.let { translation ->
