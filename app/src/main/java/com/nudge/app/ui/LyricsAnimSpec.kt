@@ -315,7 +315,78 @@ data class LyricsAnimSpec(
      * 同量级，剩下的时间该词保持全亮。
      */
     val karaokeRevealFraction: Float = 0.45f,
+
+    /**
+     * 逐字升起相对扫光的**时间差**（毫秒）。
+     *
+     * 这是「光把词提上来」这个因果的实现：光先扫过这个词，隔这么久字才
+     * 被提起来。为 0 时两件事同时发生，观感退化成「字自己在动」，
+     * 那层因果读不出来。
+     *
+     * 取 170ms：早先是 90ms，真机上**偏快**——光刚过去字几乎立刻就跟上来，
+     * 两件事黏成一个动作，那层「先后」读不出来。加到 170ms 后
+     * （约合词长中位数 450ms 的三分之一）中间那段空档才真的看得见。
+     *
+     * 也不能再大：光走到下一个词了前一个词才开始起，就脱节了。
+     */
+    val liftDelayMs: Int = 170,
+
+    /**
+     * 单个字符从基线升到 [liftHoldDp] 所用的时长（毫秒），含过冲与回落。
+     *
+     * 取 420ms：早先 260ms 真机上**升得太急**，观感是「弹起来」而不是
+     * 「被提起来」——那道光是柔的，字跟着它走也该是柔的。
+     * 拉长之后过冲与回落各自有了铺开的余地，摆动才看得清。
+     *
+     * 与 [settleTweenMs]（整列位移 420ms）同量级是刻意的：这两件事
+     * 在换行时会同时发生，量级差太多会显得是两套动画各跑各的。
+     */
+    val liftRiseMs: Int = 420,
+
+    /**
+     * 升起途中的**过冲峰值**（dp）。与 [liftHoldDp] 之间那道落差
+     * 就是用户看到的「上下摆动一下」，两者相等即没有摆动。
+     *
+     * 取 5dp：27sp 的字号下约合行高的 6%，肉眼看得出但不至于把行距搅乱。
+     */
+    val liftPeakDp: Float = 5f,
+
+    /**
+     * 升起完成后**保持**的高度（dp）。0 表示升起后完全落回基线。
+     *
+     * 取 3dp 而非 0：已唱的字留在抬高的位置，「被光提起来就留在上面」。
+     * 整行的落回由渲染侧在**换行**时统一做（见 `LyricsOverlay` 的
+     * liftScale），而不是每个字符自己落——后者会让一行里的字此起彼伏。
+     *
+     * 值要明显小于 [liftPeakDp]，否则过冲被吃掉、摆动不可见。
+     */
+    val liftHoldDp: Float = 3f,
 ) {
+
+    /**
+     * 逐字升起的参数打包。渲染侧与 [KaraokeLift] 都只认这四个值。
+     *
+     * 单独成一个类而不是把 [LyricsAnimSpec] 整个传下去：那边是纯函数，
+     * 参数面越小越好测，也不必因为这里加了个不相干的字段就跟着变。
+     */
+    val karaokeLift: KaraokeLiftSpec
+        get() = KaraokeLiftSpec(
+            delayMs = liftDelayMs,
+            riseMs = liftRiseMs,
+            peakDp = liftPeakDp,
+            holdDp = liftHoldDp,
+        )
+
+    /**
+     * 逐字升起是否启用。两个高度都为 0 即关闭。
+     *
+     * 渲染侧据此**跳过整条逐字符绘制路径**，回到改动前那次
+     * 「1 个 drawContent + 压暗矩形」——关掉时不该付任何成本，
+     * 实验室的开/关对照才有意义。
+     */
+    val karaokeLiftEnabled: Boolean
+        get() = liftPeakDp > 0f || liftHoldDp > 0f
+
     /** 焦点（alpha / blur）动画的起始延迟。焦点先行时为 0。 */
     val focusDelayMs: Int get() = if (focusLeadMs >= 0) 0 else -focusLeadMs
 

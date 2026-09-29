@@ -316,6 +316,44 @@ fun LyricsLabScreen(onBack: () -> Unit) {
                 onChange = { v -> updateSpec { it.copy(karaokeRevealFraction = v) } },
             )
 
+            SectionTitle("逐字升起")
+            LabSlider(
+                label = "升起滞后扫光",
+                value = spec.liftDelayMs.toFloat(),
+                range = 0f..300f,
+                display = "${spec.liftDelayMs}ms",
+                hint = "「光把词提上来」这个因果的全部来源：光先扫过，隔这么久字才起。" +
+                    "拖到 0 是两件事同时发生，观感退化成「字自己在动」",
+                onChange = { v -> updateSpec { it.copy(liftDelayMs = v.roundToInt()) } },
+            )
+            LabSlider(
+                label = "单字升起时长",
+                value = spec.liftRiseMs.toFloat(),
+                range = 80f..600f,
+                display = "${spec.liftRiseMs}ms",
+                hint = "一个字符从基线走完整条升起曲线的时长（含过冲与回落）",
+                onChange = { v -> updateSpec { it.copy(liftRiseMs = v.roundToInt()) } },
+            )
+            LabSlider(
+                label = "过冲峰值",
+                value = spec.liftPeakDp,
+                range = 0f..14f,
+                display = "${fmt(spec.liftPeakDp)}dp",
+                // 峰值与保持高度的**落差**才是摆动，只说峰值会让人以为越大越明显
+                hint = "升到最高点的量。它与下面的「保持高度」之间那道落差就是" +
+                    "「上下摆动一下」，两者相等即没有摆动",
+                onChange = { v -> updateSpec { it.copy(liftPeakDp = v) } },
+            )
+            LabSlider(
+                label = "保持高度",
+                value = spec.liftHoldDp,
+                range = 0f..10f,
+                display = if (spec.liftHoldDp <= 0.05f) "0（升起后落回基线）" else "${fmt(spec.liftHoldDp)}dp",
+                hint = "唱过的字最终停在这个高度，被光提起来就留在上面。" +
+                    "整行的落回在换行时统一做。与「过冲峰值」同时为 0 即关闭整个升起效果",
+                onChange = { v -> updateSpec { it.copy(liftHoldDp = v) } },
+            )
+
             SectionTitle("锚点")
             LabSlider(
                 label = "当前行固定在第几行",
@@ -672,5 +710,11 @@ private fun LyricsAnimSpec.toSourceSnippet(): String = buildString {
     appendLine("alphaStep = ${fmt(alphaStep)}f,")
     appendLine("settleTweenMs = $settleTweenMs,")
     appendLine("fadeAnimMs = $fadeAnimMs,")
-    append("focusLeadMs = $focusLeadMs,")
+    appendLine("focusLeadMs = $focusLeadMs,")
+    appendLine("karaokeUnsungAlpha = ${fmt(karaokeUnsungAlpha)}f,")
+    appendLine("karaokeRevealFraction = ${fmt(karaokeRevealFraction)}f,")
+    appendLine("liftDelayMs = $liftDelayMs,")
+    appendLine("liftRiseMs = $liftRiseMs,")
+    appendLine("liftPeakDp = ${fmt(liftPeakDp)}f,")
+    append("liftHoldDp = ${fmt(liftHoldDp)}f,")
 }
