@@ -73,6 +73,7 @@ fun SettingsScreen(
     onOpenHapticLab: () -> Unit,
     onOpenCoverLab: () -> Unit,
     onOpenLockWallpaper: () -> Unit,
+    onOpenQuickJump: () -> Unit,
     onBack: () -> Unit,
 ) {
     Column(
@@ -230,6 +231,15 @@ fun SettingsScreen(
         // 独立成组而不是并入「主题」：明暗主题与布局形态是两件事，
         // 混在一起会让人以为选了封面模式就不能调主题。
         // 两者确有交集——封面模式恒为暗底白字，不受主题影响，这写在 hint 里。
+        // 单独一个分组而不是挂进「显示模式」：它显示的位置在**别的应用**上方，
+        // 与本应用界面长什么样无关，要的权限也完全不同。
+        SectionTitle("快速跳转")
+        NavRow(
+            label = "悬浮跳转按钮",
+            hint = "网易云音乐在前台时，屏幕边缘显示一个按钮，点一下回到 nudge",
+            onClick = onOpenQuickJump,
+        )
+
         SectionTitle("显示模式")
         DisplayMode.entries.forEach { mode ->
             OptionRow(

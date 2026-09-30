@@ -41,6 +41,12 @@ LockWallpaperService ──► BackdropBaker ──► WallpaperManager.setBitma
         ├── RestorePlan   (恢复的两个分支)
         └── LockWallpaperStore ◄── LockWallpaperScreen (设置页, 带实时预览)
 
+OverlayBubbleService ──► BubbleWindow ──► WindowManager (APPLICATION_OVERLAY)
+        │                     ▲── OverlayStore ◄── QuickJumpScreen (设置页)
+        ├── ForegroundAppMonitor ──► UsageStatsManager.queryEvents
+        │            ▲── ForegroundAppResolver (纯 Kotlin)
+        └── BubblePolicy  (显隐判定, 纯 Kotlin)
+
 UpdateChecker ──► GitHub API /releases/latest
 ApkDownloader ──► UpdateInstaller → FileProvider → 系统安装器
 ```
@@ -1378,6 +1384,287 @@ scale 必须排在 blur 之前），统一字号后这些全部不需要了。
 配置**独立于 `NudgeConfig`、不进 `ProfileCodec`**：锁屏壁纸是设备级的
 环境设定，切预设不该改它。这也避开了「加配置项要同时改五处」那条连锁。
 
+## 快速跳转气泡
+
+网易云在前台时，在屏幕一侧挂一个悬浮按钮，点一下回到 nudge（`overlay/` 包，
+设置页「快速跳转」）。解决的是「在网易云里翻歌单，翻完想回盲操界面」
+要经过最近任务或桌面的问题。
+
+### 两项权限都是 appop 级，不是运行时权限
+
+真机核对（`pm list permissions -f`）：
+
+| 权限 | protectionLevel |
+|---|---|
+| `SYSTEM_ALERT_WINDOW` | `signature\|development\|appop\|pre23\|installer\|setup` |
+| `PACKAGE_USAGE_STATS` | `signature\|privileged\|development\|appop\|retailDemo` |
+
+两者都带 `appop`，这是第三方唯一的入口。**`requestPermissions` 对它们无效**，
+只能跳系统设置由用户手动开。
+
+`PACKAGE_USAGE_STATS` 的检查**必须问 `AppOpsManager`**，不能用
+`checkSelfPermission`——后者查的是 manifest 授予状态，而这个权限对第三方
+永远是 denied。查错的表现是「明明授了权还提示未授予」。
+
+悬浮窗授权页要**带 package Uri** 才直达本应用那一项；而使用情况访问页
+**不接受 package Uri**（部分 ROM 上带了直接打不开），只能落到列表页，
+所以设置页的说明里要写清要在列表里找哪一项。
+
+### 前台检测用 UsageStats，不用无障碍服务
+
+无障碍服务能拿 `TYPE_WINDOW_STATE_CHANGED` 回调，无需轮询、系统还会自动拉活，
+技术上更优。**但它的授权弹窗会告诉用户「此应用可读取屏幕上的全部内容、
+可代表你操作」**——为一个跳转按钮要这么大的权限不成比例，也会让人合理地
+怀疑这个应用在干什么。UsageStats 的授权文案只是「使用情况访问」，与它实际
+要的东西相称。
+
+真机取证：`ACTIVITY_RESUMED` / `ACTIVITY_PAUSED` 事件准确且及时，
+`dumpsys usagestats` 里能直接看到。
+
+#### 只认 `RESUMED`，不能「取最后一条事件」
+
+真机取证：切走网易云时事件成对出现，且 `PAUSED` 与 `RESUMED` 常落在
+**同一毫秒**：
+
+```
+09:24:02 ACTIVITY_PAUSED  com.netease.cloudmusic
+09:24:02 ACTIVITY_RESUMED com.sec.android.app.launcher
+```
+
+「取最后一条」在同毫秒时依赖排序稳定性，运气不好会解出已经切走的那个包
+——表现为网易云退到后台了气泡还挂着。前台应用的定义是「最近一个 resume
+且未被别人覆盖的」，`PAUSED` 不携带「接下来谁在前台」的信息。
+
+#### 查询窗口要远大于轮询间隔
+
+`queryEvents` 按时间区间查。区间与轮询间隔等宽时，两次轮询之间的抖动
+（调度延迟、事件落库延迟）会让某些事件一次都没被查到，表现为前台应用
+偶发解不出来。取 10 秒（间隔的十倍）让相邻查询大幅重叠，重复读同一条
+事件是无害的。
+
+#### 「前台未知」必须与「确定不是网易云」区别对待
+
+查询窗口内一条 `RESUMED` 都没有，只说明用户一直没切应用——**那正是最该
+显示气泡的时候**。所以 `BubblePolicy` 在前台未知时**沿用上一次的判定**。
+写成「未知即隐藏」的表现是：盯着网易云看几分钟，气泡自己消失了。
+
+但「沿用」只对前台归属这一个维度成立，不能盖过开关与熄屏，
+`BubblePolicyTest` 有用例拦着。
+
+### 只对网易云显示
+
+`BubblePolicy.TARGET_PACKAGES`。本应用的收藏、歌词、高清封面全部只对网易云
+成立（见「媒体控制的适用范围」），对别的播放器弹跳转按钮，点进去多半是个
+空壳界面。做成集合是为了将来加播放器时只改一处。
+
+nudge 自己在前台时也不显示——在自己界面上挂「打开 nudge」无意义，
+且那块区域整个是触摸板，气泡会吞掉一根手指。有测试拦着
+`SELF_PACKAGE` 被误加进 `TARGET_PACKAGES`。
+
+### `FLAG_LAYOUT_IN_SCREEN` 必须加，少了坐标会整体偏移
+
+**真机实测**：不加时 `TOP|START` 的原点是**内容区**而非屏幕。
+`dumpsys window` 里 `parent=[0,78][1080,2355]`，请求 y=432 实际落在
+`frame=[924,510]`——正好差一个状态栏高度 78px。
+
+表现是设置页的「竖向位置」比标称值偏下，且**拖动位置存盘后下次显示又往下
+挪一截**（落盘的是屏幕系，读回来当内容区系用，每次多偏 78px）。
+加上之后 `parent` 变成 `[0,0]`，`frame` 与请求值逐字节一致。
+
+这个缺陷是按标称坐标点击点不到气泡才暴露的——肉眼看「气泡在右上角」
+完全正常。
+
+另外两个 flag 各有分工，别删：
+
+- `FLAG_NOT_FOCUSABLE`：不抢输入焦点。少了它网易云的搜索框会失焦、
+  返回键也会先被气泡窗口吃掉。
+- `FLAG_LAYOUT_NO_LIMITS`：让拖动时窗口能跟着手指出界，松手再吸附回来。
+  去掉它系统会在边缘夹住窗口，手感变成「拖到边上拖不动了」。
+
+### 尺寸要用 `maximumWindowMetrics`
+
+与 `BackdropBaker` 踩的是同一个坑：`displayMetrics` 是**应用窗口**尺寸
+（实测 1080×2277，比屏幕少 123px），而气泡是 overlay、坐标系是整个屏幕。
+用错会让「贴右边」差出一截、「贴底部」到不了底。API 30 以下没有这个
+接口，回落到 `displayMetrics`。
+
+### 气泡在锁屏上不可见，这是天花板不是缺陷
+
+`mBaseLayer=111000`，而锁屏的 `NotificationShade` 是 171000——
+同锁屏壁纸那节的结论，第三方悬浮窗画在锁屏**底下**。所以这个功能只在
+普通应用上方成立，别指望它出现在锁屏上。（策略上熄屏本来就会隐藏它。）
+
+### 拖动期间**不动窗口**，只改子 view 的 translation
+
+这是拖动手感的关键，第一版每个 `ACTION_MOVE` 都 `updateViewLayout` 挪窗口，
+真机上明显卡。
+
+逐帧实测（Choreographer 逐帧驱动，120Hz 屏一帧 8.3ms）：
+
+| 做法 | 中位帧间隔 | p95 | 掉帧 |
+|---|---|---|---|
+| 每个 MOVE 挪窗口 | 16.6ms | 24.9ms | **157/239** |
+| 只改 translation | 8.3ms | 8.3ms | 4/239 |
+
+挪窗口只能跑到**一半**的帧率。窗口几何变更要经 WindowManagerService 与
+SurfaceFlinger，而 translation 只是更新一个 RenderNode 属性，
+不触发 measure/layout，也不出进程。
+
+真实拖动侧的同一结论（同样的注入手势、同样路径各三次）：
+
+| 做法 | 收到的 MOVE 事件 |
+|---|---|
+| 只改 translation | 235 / 3 次 ≈ **78** 每次 |
+| 每个 MOVE 挪窗口 | 141 / 3 次 ≈ **47** 每次 |
+
+同一个 700ms 手势少收 40% 的事件——跟不上就被合并丢掉，那就是「卡」。
+
+#### 别用单次调用耗时判断这件事
+
+`updateViewLayout` 在客户端只花 **24us**（中位 21us，p95 26us），
+看起来毫无问题——**我正是被这个数误导过**，一度以为瓶颈不在这里。
+它是单向 binder，量到的只是入队；代价全在 WMS 那一侧。
+
+同理 `dumpsys gfxinfo` 在这里也会骗人：挪窗口那版只记录到 **2 帧**
+（窗口只是被挪动，本应用自己不重绘），看着毫无压力。
+**只有量帧间隔或数收到的触摸事件才看得出来。**
+
+#### 窗口有两种尺寸，只在进入／退出拖动时各变一次
+
+- **静止态**：窗口**恰好**是气泡大小（48dp）。这是刻意的——全屏窗口会把
+  下层应用的触摸全部吃掉，而气泡平时只该挡住自己那一小块。
+- **拖动态**：一次性放大到全屏，让 translation 有地方可走。整个拖动过程中
+  窗口纹丝不动。
+
+代价是拖动期间全屏窗口会挡住网易云的触摸。可以接受——用户正在拖气泡，
+本来就不会同时想点网易云，松手立刻恢复成小窗口。
+
+**松手必须缩回去**，否则气泡会永久吃掉整屏触摸，而界面上完全看不出异常
+（气泡还是那么大一个）。回归验证要专门查这条：拖完之后网易云还能不能滚动。
+
+放大与 translation 的设置必须**在同一次 `updateViewLayout` 之前**完成，
+否则会有一帧气泡跳到窗口左上角，那是肉眼可见的闪动。
+
+容器要 `clipChildren = false`：拖动时气泡靠 translation 走到窗口各处，
+被容器裁掉就看不见了。
+
+### 排查拖动问题时，先确认起点不在系统手势区
+
+**这条坑浪费了不少时间，而且会把人引向完全错误的结论。**
+
+气泡吸附在左边缘时，`x≈84`，正落在系统的**返回手势区**里。从那里起手拖动，
+手势会被系统抢走，应用侧收到 `ACTION_CANCEL`——表现为拖了两三下气泡就
+停住不跟手了。
+
+我据此一度断定「挪窗口会导致输入分发取消手势」，连测三次全部 cancel
+看着非常确凿。**实际是位置导致的**：换到右侧起手（`x≈996`），
+新旧两种做法都能跑完 3/3 次、零 cancel。
+
+所以拖动相关的测量**起点终点都要留在屏幕中段**，避开左右两侧的边缘手势区。
+
+### 真机验证拖动的办法
+
+`input swipe` 对普通应用窗口是可靠的（实测在网易云里上划，
+滚动区域 31320 个采样点变化），但对悬浮窗会受上面那条边缘手势的影响。
+
+`sendevent` 注入在这台机器上**进不到应用**（`getevent -pl` 能列出
+`/dev/input/event4`、量程 0..4095，但注入的事件应用侧一条都收不到）。
+CLAUDE.md 滑动手势那节记的 `sendevent` 办法对触摸板生效，这里不适用，
+别在这上面耗时间。
+
+判据用**收到的 MOVE 事件数**与**是否有 CANCEL**，比丢帧率可靠：
+
+```bash
+adb logcat -d | grep -c 'EV a=2'   # MOVE 数，临时埋点时用
+adb logcat -d | grep -c 'EV a=3'   # CANCEL 数
+```
+
+### 用原生 View 而不是 ComposeView
+
+项目其余 UI 全是 Compose，这里刻意例外。`ComposeView` 挂在 `WindowManager`
+上需要自备 `ViewTreeLifecycleOwner` / `SavedStateRegistry`，否则一 attach
+就崩；而这个视图只是一个圆加一个图标，不值得为它引入一套生命周期宿主。
+
+图标底下垫一个半透明深色圆：浅色歌单页上，图标自己的浅色边缘会与背景
+糊在一起，看不出这是个可点的东西。
+
+拖动与点击用系统的 `scaledTouchSlop` 区分，不自己定阈值——它随屏幕密度
+与 ROM 变化，写死会在高密度屏上把轻微手抖当成拖动，于是「点不动」。
+
+### 从服务里 `startActivity` 成立，因为持有悬浮窗权限
+
+Android 10+ 限制后台启动 Activity，但**持有 `SYSTEM_ALERT_WINDOW` 的应用
+是豁免的**——而那正是画气泡的前提。真机实测点击气泡能拉起主界面。
+
+### 前台服务与 A14+ 的坑
+
+整件事发生在别的应用在前台时，nudge 自己不可见，One UI 会在几分钟内杀掉
+普通后台服务（表现为「用了一会儿气泡自己没了」）。所以只能是前台服务，
+代价是通知栏常驻一条，与锁屏壁纸是同一个取舍。
+
+`foregroundServiceType="specialUse"` 同样**必须声明**，A14+ 不声明就是
+启动即崩，而 A13 上完全测不出来——见锁屏壁纸那节。**本功能目前只在
+A13 真机上验过，A14+ 未验。**
+
+**独立的通知渠道**（`overlay_bubble`，ID 1002）：与锁屏壁纸共用会让用户
+关掉那个渠道时把两个功能的通知一起静音，而前台服务通知被关掉后功能仍在跑
+——他会失去「这东西正在后台工作」的唯一线索。
+
+### 服务的起停由设置页驱动，不由服务自己观察配置
+
+关掉时若指望服务收到配置后 `stopSelf`，而它可能已经被系统杀了，
+那样就没人摘掉窗口了——结果是一个点不动的图标赖在屏幕上。
+`onDestroy` 里也必须 `bubble.hide()`，同一个理由。
+
+### 配置独立于 `NudgeConfig`，不进 `ProfileCodec`
+
+这是「在别的应用上方显示」这件事的设备级设定，与手势绑定那套无关，
+切预设不该把它改掉。理由同 `LockWallpaperConfig`，也顺带避开了
+「加配置项要同时改五处」那条连锁。
+
+默认**关**：这个功能要两项特殊权限，又会在别的应用上方画东西，
+默认开等于替用户做了一个他没同意的决定。
+
+### 开关始终可点，权限不全时引导授权
+
+开关**不因缺权限而禁用**。禁用态只能传达「现在不能开」，传达不了「为什么」
+和「怎么才能开」——用户看到一个灰着的开关，得自己把它和上面的权限行联系起来。
+
+打开时若权限不全：
+
+1. **不写 `enabled`**。写了的话功能会处于「开着但画不出气泡」的状态，
+   而下次启动 `resumeIfEnabled` 会照样跳过（它先查权限），
+   用户看到开关是开的却永远没反应。
+2. 记下「用户想开」这个意图（`pendingEnable`），把他送到**缺的那一项**
+   授权页。
+3. 两项都授全后**自动开启**。权限状态由 `MainActivity` 那条既有的每秒轮询
+   刷新，所以从系统设置返回后一秒内生效。
+
+`pendingEnable` **只存内存**，杀进程即失效：持久化会让「几天后某次偶然授权」
+悄悄把功能开起来，而用户早就忘了自己点过这个开关。
+
+等待期间开关显示为**开**，且文案换成「已记下，授予权限后自动开启」——
+不说明的话，用户从授权页返回看到开关是开的却没气泡，会以为坏了。
+
+只在**两项都齐**时才真的开：授了一项就开会让功能处于「有权限画但不知道
+前台是谁」的状态，气泡永不出现，和没开一样。
+
+#### 自动开启那个 effect 的 key 里不能有 `pendingEnable`
+
+**这个坑在本项目里已经栽过第二次了**（第一次是 `LyricsScroller` 的
+`shiftEpoch`，见「歌词展示」一节）。
+
+`pendingEnable` 是 effect 自己要清掉的状态。把它放进 `LaunchedEffect` 的 key，
+「清零」这个动作就会重启 effect，把协程在**第一个挂起点**取消掉——
+结果是标志清了、配置没写、服务没起。界面上表现为**「两项权限都授予了，
+但开关自己弹回去、功能没开」**，而代码读起来完全合理。
+
+所以：只 key 两个权限布尔量，清零放在最后，写入走非挂起的 `saveBlocking`
+（连 `currentConfig()` 都不能用，它也是挂起函数，又引入一个可取消的点）。
+
+只 key 权限是完备的：`pendingEnable` 只会在权限不全时被置上，
+所以「它变 true」不可能与「权限已齐」同时成立。
+
 ## 应用内更新
 
 设置页手动触发，不做启动自动检查——这是刻意的，盲操工具不该在启动时弹更新提示。
@@ -1581,7 +1868,7 @@ adb shell dumpsys media_session | ag -u -o 'description=[^,]*|state=(PLAYING|PAU
 JAVA_HOME=/opt/homebrew/opt/openjdk@17 ./gradlew test
 ```
 
-270 个单元测试，主体在 `GestureRecognizer`——正例（七种手势 × 三档灵敏度）、边界（阈值临界、滑动死区）、负例（斜滑、两指反向、单指滑动、三指降级、指数不符、超时）。**动手势逻辑必须补相应测试**，尤其是防误触的负例。
+284 个单元测试，主体在 `GestureRecognizer`——正例（七种手势 × 三档灵敏度）、边界（阈值临界、滑动死区）、负例（斜滑、两指反向、单指滑动、三指降级、指数不符、超时）。**动手势逻辑必须补相应测试**，尤其是防误触的负例。
 
 预设部分由 `ProfileCodecTest` 覆盖 round-trip 与宽容解码，`ProfileSlotTest` 覆盖槽位号解析。
 
@@ -1853,6 +2140,92 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@17 ./gradlew test
      （防「同图不写」把它挡掉）。
   5. 连切十首断言 Native heap 不持续上涨（实测 79MB → 31MB，不涨反降）。
   6. 飞行模式下切歌断言 `hiRes=false`（回落 363）且不崩。
+- 快速跳转气泡的七项。`overlay/` 下两组纯逻辑测试（`ForegroundAppResolverTest`
+  盖同毫秒事件与乱序，`BubblePolicyTest` 盖前台未知时沿用上一次）覆盖了判定，
+  但加窗、坐标、触摸只能真机验。开关走 adb 入口：
+
+  ```bash
+  adb shell am start -n com.nudge.app/.MainActivity   # 先切前台，否则广播被 MARs 拦掉
+  adb shell am broadcast -a com.nudge.app.OVERLAY \
+    -n com.nudge.app/.overlay.OverlayDebugReceiver --es cmd on
+  adb logcat -d | ag -u 'OverlayBubble'
+  ```
+
+  1. **网易云在前台时气泡出现，nudge 自己在前台时不出现。**
+     日志里 `气泡显示 前台=... 挂载=true` 是最直接的信号。
+  2. **气泡确实画在网易云之上。** `dumpsys window windows` 里我们那条的
+     序号应**小于**网易云的（序号越小越靠上），且 `ty=APPLICATION_OVERLAY`。
+  3. **标称坐标与实际 frame 一致**。这是 `FLAG_LAYOUT_IN_SCREEN` 那条
+     缺陷的判据，肉眼看不出来：
+
+     ```bash
+     adb shell dumpsys window windows | ag -u -A18 'Window\{[a-f0-9]+ u0 com.nudge.app\}' \
+       | ag -u 'mAttrs=|Frames:'
+     ```
+
+     `mAttrs={(x,y)` 与 `frame=[x,y]` 必须**相等**，且 `parent=[0,0]`。
+     出现 `parent=[0,78]` 且 frame 比请求多 78px 就是回归了。
+  4. **按标称中心点击能拉起 nudge**（而不是点到网易云身上）。
+     上一条错了这条必然也错，但这条是用户真正会遇到的现象：
+
+     ```bash
+     adb shell input tap 996 504
+     adb shell dumpsys window | ag -u -o 'mCurrentFocus=Window\{[^ ]* u0 [^}]*'
+     ```
+
+  5. **拖动吸附并落盘**。拖到另一侧后查 frame 的 x 应是边距值（4dp），
+     且 DataStore 里 `ov_edge` 变了：
+
+     ```bash
+     adb shell input swipe 996 504 200 1400 600
+     adb shell su -c 'cat /data/data/com.nudge.app/files/datastore/overlay_bubble.preferences_pb' \
+       | tr -c '[:print:]\n' '\n' | ag -u 'ov_|LEFT|RIGHT'
+     ```
+
+  6. **熄屏隐藏、亮屏恢复**，以及 **force-stop 后打开应用能由
+     `resumeIfEnabled` 重新拉起且沿用落盘位置**。
+
+  5a. **静止态窗口必须恰好是气泡大小，松手后必须缩回去**。这是拖动优化
+     引入的新风险：拖动期间窗口会放大到全屏，忘了缩回去就会永久吃掉
+     整屏触摸，而界面上完全看不出异常。`mAttrs` 里的尺寸应是 `(144x144)`
+     而不是 `(1080x2400)`，且拖完之后网易云仍能滚动：
+
+     ```bash
+     adb shell input swipe 400 1600 400 900 250   # 拖完气泡后在网易云里上划
+     ```
+
+  5b. **拖动全程跟手**。判据是**收到的 MOVE 事件数**（约 78 每次 700ms 手势）
+     与**零 CANCEL**，别看 `dumpsys gfxinfo`——挪窗口那版只记录到 2 帧，
+     看着毫无压力（见上）。测量的起点终点都要留在屏幕中段，
+     贴边起手会被系统的边缘手势抢走，表现为 CANCEL 而与本功能无关。
+  7. **气泡真的画上去了**，不只是窗口挂着。肉眼在截图里找一个 48dp 的
+     图标很吃力，改为开关各截一张逐像素比对——气泡区域应有大量差异像素，
+     而屏幕别处应为 **0**（实测气泡区 7295 个像素有差异、平均差 62，
+     对照区 0）。只看 `挂载=true` 不够：加窗成功但绘制失败（图标资源取不到）
+     时那个值仍是 true。
+
+  8. **权限引导的闭环**。这条全在 Compose 状态里，没法单测，而它的失败模式
+     （开关弹回去、功能没开）看起来像用户自己没点上：
+
+     ```bash
+     adb shell appops set com.nudge.app SYSTEM_ALERT_WINDOW ignore
+     adb shell appops set com.nudge.app GET_USAGE_STATS ignore
+     adb shell su -c 'rm -f /data/data/com.nudge.app/files/datastore/overlay_bubble.preferences_pb'
+     ```
+
+     然后在界面上点开关，逐项断言：
+
+     - 开关**可点**（`uiautomator dump` 里 `enabled="true"`，不是灰的）
+     - 点了跳到 `Settings$OverlaySettingsActivity`，且**配置里 `enabled` 仍是 false**
+     - 只授一项时**不自动开启**，文案是「已记下，授予权限后自动开启」
+     - 两项都授全后**一秒内自动开启**，服务起来、气泡出现、开关显示为开
+
+     中间那条最容易漏，而它正是 `LaunchedEffect` key 写错时的唯一现象
+     （见上）。查配置用 `--es cmd state`，比翻界面可靠。
+
+  **A14+ 未验**：前台服务类型那条坑在 A13 上完全测不出来，换到 A14+ 的
+  机器上要重跑第 1 项（启动即崩会直接暴露）。
+
 - 存两个预设后查 shortcut，断言两条都在且 title 是用户起的名字；
   删掉一个后再查，断言只剩一条（防 sync 漏调或误用 `addDynamicShortcuts` 回归）：
 

@@ -31,6 +31,11 @@ import com.nudge.app.media.ActionResult
 import com.nudge.app.media.ArtworkCache
 import com.nudge.app.media.MediaControlRepository
 import com.nudge.app.media.TrackInfo
+import com.nudge.app.overlay.OverlayBubbleService
+import com.nudge.app.overlay.OverlayConfig
+import com.nudge.app.overlay.OverlayPermissions
+import com.nudge.app.overlay.OverlayStore
+import com.nudge.app.ui.QuickJumpScreen
 import com.nudge.app.ui.CoverLabScreen
 import com.nudge.app.ui.LockWallpaperScreen
 import com.nudge.app.wallpaper.LockWallpaperService
@@ -100,6 +105,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var repository: MediaControlRepository
     private lateinit var dispatcher: ActionDispatcher
     private lateinit var configStore: ConfigStore
+    private lateinit var overlayStore: OverlayStore
 
     /**
      * 防误触模式的当前值，供 [onWindowFocusChanged] 读取。
@@ -118,6 +124,7 @@ class MainActivity : ComponentActivity() {
         repository = MediaControlRepository(this)
         dispatcher = ActionDispatcher(this, repository)
         configStore = ConfigStore(this)
+        overlayStore = OverlayStore(this)
 
         // 盲操场景下屏幕熄灭就没法操作了
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -130,6 +137,8 @@ class MainActivity : ComponentActivity() {
         // 不做开机自启（RECEIVE_BOOT_COMPLETED）：那要多一个权限，
         // 而这个功能本来就依赖用户在用 nudge，进过一次应用就恢复了。
         LockWallpaperService.resumeIfEnabled(this)
+        // 快速跳转气泡同理，见该方法的注释。
+        OverlayBubbleService.resumeIfEnabled(this)
 
         // 这里不再无条件进沉浸式：三层防误触统一由配置开关控制，
         // 而配置来自 DataStore 的 Flow，要等下面的 LaunchedEffect 拿到真实值。
@@ -148,6 +157,7 @@ class MainActivity : ComponentActivity() {
             var showHapticLab by remember { mutableStateOf(false) }
             var showCoverLab by remember { mutableStateOf(false) }
             var showLockWallpaper by remember { mutableStateOf(false) }
+            var showQuickJump by remember { mutableStateOf(false) }
             // 手势绑定二级页。用可空的 ActionType 而非布尔量：这一页必须知道
             // 是在给哪个动作配手势，null 即「不在这一页」。
             var bindingAction by remember { mutableStateOf<ActionType?>(null) }
@@ -155,6 +165,19 @@ class MainActivity : ComponentActivity() {
             var hasPermission by remember { mutableStateOf(repository.hasNotificationAccess()) }
             var lyricsState by remember { mutableStateOf<LyricsState>(LyricsState.Idle) }
             var updateState by remember { mutableStateOf<UpdateState>(UpdateState.Idle) }
+            val overlayConfig by overlayStore.config
+                .collectAsState(initial = OverlayConfig.DEFAULT)
+            // 气泡那两项权限是在系统设置里授的，返回后必须重查。挂进下面那条
+            // 既有的轮询循环，不另起一条——它本来就在每秒查通知使用权。
+            var canDrawOverlay by remember {
+                mutableStateOf(OverlayPermissions.canDrawOverlay(this@MainActivity))
+            }
+            var canReadUsage by remember {
+                mutableStateOf(OverlayPermissions.canReadUsageStats(this@MainActivity))
+            }
+            // 「用户想开但权限还没授全」。只存内存——持久化会让几天后某次偶然
+            // 授权悄悄把功能开起来，而用户早忘了自己点过这个开关。
+            var pendingEnableQuickJump by remember { mutableStateOf(false) }
 
             // 轮询播放状态。MediaController 回调需要绑定/解绑生命周期管理，
             // 而本应用是前台短时使用，1 秒轮询更简单且开销可忽略。
@@ -170,6 +193,8 @@ class MainActivity : ComponentActivity() {
                     val current = withContext(Dispatchers.IO) { repository.currentTrack() }
                     hasPermission = permission
                     track = current.keepHiResFrom(track)
+                    canDrawOverlay = OverlayPermissions.canDrawOverlay(this@MainActivity)
+                    canReadUsage = OverlayPermissions.canReadUsageStats(this@MainActivity)
                     delay(1000)
                 }
             }
@@ -183,6 +208,32 @@ class MainActivity : ComponentActivity() {
                 .map { it.antiMistouchEnabled }
                 .distinctUntilChanged()
                 .collectAsState(initial = null)
+            // 用户打开过开关但当时权限不全，等两项都授全了自动生效。
+            // 权限状态由上面那条轮询每秒刷新，所以从系统设置返回后一秒内生效。
+            //
+            // 只在**两项都齐**时才开：授了一项就开会让功能处于「有权限画但
+            // 不知道前台是谁」的状态，气泡永不出现，和没开一样。
+            //
+            // **key 里不能有 `pendingEnableQuickJump`**，尽管 effect 读它。
+            // 它是 effect 自己要清掉的状态，进 key 就会让「清零」这个动作
+            // 重启 effect，把协程在第一个挂起点取消掉——结果是标志清了、
+            // 配置没写、服务没起，界面上表现为「两项都授权了却还是没开」。
+            // 同 `LyricsScroller` 里 `shiftEpoch` 那条坑（见 CLAUDE.md）。
+            //
+            // 只 key 权限是完备的：pending 只会在权限不全时被置上，
+            // 所以「pending 变 true」不可能与「权限已齐」同时成立。
+            LaunchedEffect(canDrawOverlay, canReadUsage) {
+                if (pendingEnableQuickJump && canDrawOverlay && canReadUsage) {
+                    // 写入走非挂起版本，且清零放在最后：这段不能被取消打断，
+                    // 否则会留下「pending 已清但功能没开」的死角。
+                    // 用已收集的 state 而非 `currentConfig()`：后者是挂起函数，
+                    // 又引入一个可被取消的点。
+                    overlayStore.saveBlocking(overlayConfig.copy(enabled = true))
+                    OverlayBubbleService.start(this@MainActivity)
+                    pendingEnableQuickJump = false
+                }
+            }
+
             LaunchedEffect(antiMistouch) {
                 val enabled = antiMistouch ?: return@LaunchedEffect
                 antiMistouchEnabled = enabled
@@ -246,6 +297,63 @@ class MainActivity : ComponentActivity() {
                         LockWallpaperScreen(
                             track = track,
                             onBack = { showLockWallpaper = false },
+                        )
+                    } else if (showQuickJump) {
+                        BackHandler { showQuickJump = false }
+                        QuickJumpScreen(
+                            config = overlayConfig,
+                            canDrawOverlay = canDrawOverlay,
+                            canReadUsage = canReadUsage,
+                            pendingEnable = pendingEnableQuickJump,
+                            onEnabledChange = { on ->
+                                if (!on) {
+                                    pendingEnableQuickJump = false
+                                    overlayStore.saveBlocking(
+                                        overlayConfig.copy(enabled = false)
+                                    )
+                                    // 服务的起停由这里驱动而非服务自己观察配置：
+                                    // 关掉时服务要先收到配置再 stopSelf，而它可能
+                                    // 已经被系统杀了，那样就没人摘掉窗口了。
+                                    OverlayBubbleService.stop(this@MainActivity)
+                                } else if (canDrawOverlay && canReadUsage) {
+                                    overlayStore.saveBlocking(overlayConfig.copy(enabled = true))
+                                    OverlayBubbleService.start(this@MainActivity)
+                                } else {
+                                    // 权限不全：**不写 enabled**，只记下意图并把用户
+                                    // 送到缺的那一项。写了的话功能会处于「开着但
+                                    // 画不出气泡」的状态，而下次启动 resumeIfEnabled
+                                    // 会照样跳过，用户看到开关是开的却永远没反应。
+                                    pendingEnableQuickJump = true
+                                    startActivity(
+                                        if (!canDrawOverlay) {
+                                            OverlayPermissions.overlayIntent(this@MainActivity)
+                                        } else {
+                                            OverlayPermissions.usageAccessIntent()
+                                        }
+                                    )
+                                }
+                            },
+                            onEdgeChange = {
+                                overlayStore.saveBlocking(overlayConfig.copy(edge = it))
+                            },
+                            onYRatioChange = {
+                                overlayStore.saveBlocking(overlayConfig.copy(yRatio = it))
+                            },
+                            onSizeChange = {
+                                overlayStore.saveBlocking(overlayConfig.copy(sizeDp = it))
+                            },
+                            onAlphaChange = {
+                                overlayStore.saveBlocking(overlayConfig.copy(alpha = it))
+                            },
+                            onRequestOverlay = {
+                                startActivity(
+                                    OverlayPermissions.overlayIntent(this@MainActivity)
+                                )
+                            },
+                            onRequestUsage = {
+                                startActivity(OverlayPermissions.usageAccessIntent())
+                            },
+                            onBack = { showQuickJump = false },
                         )
                     } else if (editingAction != null) {
                         // 与实验室同理：这是设置页的下一层，返回要退回设置页。
@@ -373,6 +481,7 @@ class MainActivity : ComponentActivity() {
                             onOpenHapticLab = { showHapticLab = true },
                             onOpenCoverLab = { showCoverLab = true },
                             onOpenLockWallpaper = { showLockWallpaper = true },
+                            onOpenQuickJump = { showQuickJump = true },
                             onBack = { showSettings = false },
                         )
                     } else {

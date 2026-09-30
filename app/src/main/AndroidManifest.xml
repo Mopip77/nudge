@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.INTERNET" />
@@ -16,6 +17,17 @@
          少了它在 A14+ 上是**启动即崩**（MissingForegroundServiceTypeException），
          而 A13 上完全正常——见 LockWallpaperService 的注释。 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
+    <!-- 快速跳转气泡。两项都是 appop 级，声明了也不等于有权限，
+         必须跳系统设置由用户手动开（见 OverlayPermissions 的注释）。
+
+         真机核对（pm list permissions -f）：
+           SYSTEM_ALERT_WINDOW  signature|development|appop|pre23|installer|setup
+           PACKAGE_USAGE_STATS  signature|privileged|development|appop|retailDemo -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission
+        android:name="android.permission.PACKAGE_USAGE_STATS"
+        tools:ignore="ProtectedPermissions" />
 
     <application
         android:allowBackup="true"
@@ -101,6 +113,28 @@
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="跟随播放中的曲目更新锁屏壁纸" />
+        </service>
+
+        <!-- 快速跳转的 adb 验证入口。气泡的显隐时序与加窗成败都没法单测，
+             而界面点按读不出「现在窗口到底挂着没有」。 -->
+        <receiver
+            android:name=".overlay.OverlayDebugReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.nudge.app.OVERLAY" />
+            </intent-filter>
+        </receiver>
+
+        <!-- 快速跳转气泡。前台服务而非普通后台服务：整件事都发生在网易云
+             在前台的时候，nudge 自己不可见，One UI 会在几分钟内杀掉普通服务。
+             foregroundServiceType 的理由同上面那个服务——A14+ 不声明就是启动即崩。 -->
+        <service
+            android:name=".overlay.OverlayBubbleService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="目标播放器在前台时显示跳转按钮" />
         </service>
 
         <service
