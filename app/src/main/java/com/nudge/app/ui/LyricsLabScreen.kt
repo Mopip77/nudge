@@ -329,7 +329,7 @@ fun LyricsLabScreen(onBack: () -> Unit) {
             LabSlider(
                 label = "单字升起时长",
                 value = spec.liftRiseMs.toFloat(),
-                range = 80f..600f,
+                range = 80f..1000f,
                 display = "${spec.liftRiseMs}ms",
                 hint = "一个字符从基线走完整条升起曲线的时长（含过冲与回落）",
                 onChange = { v -> updateSpec { it.copy(liftRiseMs = v.roundToInt()) } },

@@ -26,7 +26,7 @@ data class KaraokeLiftSpec(
      * 升起途中的**过冲峰值**（dp），必须 ≥ [holdDp]。
      *
      * 峰值与保持高度之间那道落差就是用户看到的「上下摆动一下」。
-     * 两者相等即没有过冲，动效会退化成单调升到位，显得死板。
+     * 两者相等即没有过冲；默认只保留轻微回落，避免逐字弹跳。
      */
     val peakDp: Float,
 
@@ -157,30 +157,27 @@ object KaraokeLift {
      * 过冲量由曲线本身定死，改不了，而这里**峰值与保持高度是两个独立
      * 参数**——实验室要能单独调「抬多高」和「摆多大」。
      *
-     * 前段用 easeOutCubic 冲上去（起步就带速度，像被光「拽」了一下），
-     * 后段用平滑收敛回落到保持高度。分界点靠前，让上冲干脆、回落舒缓。
+     * 两段都用 smootherstep，让起点、峰值和终点的速度与加速度归零。
+     * 上升占大部分时长，相邻字符的移动能重叠，避免起步猛冲造成逐字弹跳。
      */
     private fun heightAt(p: Float, spec: KaraokeLiftSpec): Float {
         val peak = maxOf(spec.peakDp, spec.holdDp)
         if (p >= 1f) return spec.holdDp
         return if (p < PEAK_AT) {
-            // 上冲段：easeOutCubic，起步最快
+            // 从静止柔和加速，再减速抵达峰值。
             val t = p / PEAK_AT
-            peak * (1f - (1f - t) * (1f - t) * (1f - t))
+            peak * smootherstep(t)
         } else {
-            // 回落段：smoothstep 收敛到 holdDp，两端导数为 0，
-            // 与上冲段在峰值处衔接时不会出现折角。
+            // 小幅回落，峰值与保持高度处均平滑衔接。
             val t = (p - PEAK_AT) / (1f - PEAK_AT)
-            val s = t * t * (3f - 2f * t)
+            val s = smootherstep(t)
             peak + (spec.holdDp - peak) * s
         }
     }
 
-    /**
-     * 峰值出现在升起时长的哪个位置。
-     *
-     * 取 0.45：略早于中点。上冲要干脆（那是「被提起来」的瞬间），
-     * 回落要有足够时间铺开，否则摆动看着像抽搐。
-     */
-    private const val PEAK_AT = 0.45f
+    private fun smootherstep(t: Float): Float =
+        t * t * t * (t * (t * 6f - 15f) + 10f)
+
+    /** 把主要时长留给上升，让相邻字一起移动，回落仅作轻微收尾。 */
+    private const val PEAK_AT = 0.8f
 }

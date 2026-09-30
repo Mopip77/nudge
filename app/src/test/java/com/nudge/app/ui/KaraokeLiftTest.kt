@@ -154,6 +154,33 @@ class KaraokeLiftTest {
     }
 
     @Test
+    fun `默认曲线起步柔和且相邻中文字上升重叠`() {
+        val defaults = LyricsAnimSpec.DEFAULT.karaokeLift
+        val chinese = listOf(
+            LyricWord(1000L, 300L, "你"),
+            LyricWord(1300L, 300L, "好"),
+        )
+        val start = 1000L + defaults.delayMs
+        fun height(ms: Long, index: Int) = KaraokeLift.liftAt(chinese, ms, defaults)(index)
+
+        // 第一帧不应猛冲：16ms 内的位移远小于中段一帧。
+        val firstFrame = height(start + 16, 0)
+        val middleFrame = height(start + 216, 0) - height(start + 200, 0)
+        assertTrue("起步不能像弹跳一样突然冲出", firstFrame < middleFrame * 0.1f)
+
+        // 第二个字已经移动时，第一个字仍在上升，而非先落定再轮到下一个。
+        val overlap = start + 380
+        for (index in 0..1) {
+            assertTrue("相邻中文字应同时向上移动", height(overlap + 16, index) > height(overlap, index))
+        }
+        var maximum = 0f
+        for (elapsed in 0..defaults.riseMs) {
+            maximum = maxOf(maximum, height(start + elapsed, 0))
+        }
+        assertTrue("默认回弹不应超过保持高度的 15%", maximum <= defaults.holdDp * 1.15f)
+    }
+
+    @Test
     fun `空时间表恒为零`() {
         val lift = KaraokeLift.liftAt(emptyList(), 1234L, spec)
         assertEquals(0f, lift(0), 0.0001f)
