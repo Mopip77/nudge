@@ -24,7 +24,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Favorite
-import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.Settings
@@ -50,6 +49,12 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.FirstBaseline
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.res.painterResource
+import com.nudge.app.R
+import kotlin.math.roundToInt
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -62,6 +67,7 @@ import android.graphics.Bitmap
 import android.os.SystemClock
 import com.nudge.app.media.TrackInfo
 import com.nudge.app.media.formatDuration
+import com.nudge.app.media.formatLikeCount
 import kotlinx.coroutines.delay
 
 /** 进度条重组间隔。500ms 让进度看起来连续，又不至于频繁重组。 */
@@ -154,14 +160,10 @@ fun PlayerHeader(
                 }
 
                 if (track != null) {
-                    Icon(
-                        imageVector = if (track.isLiked) Icons.Filled.Favorite
-                                      else Icons.Filled.FavoriteBorder,
-                        contentDescription = if (track.isLiked) "已收藏" else "未收藏",
-                        // 收藏红在任何背景下都要保持红色——它是状态指示而非装饰，
-                        // 跟着 onDark 变白会让「已收藏」和「未收藏」失去区分。
-                        tint = if (track.isLiked) LIKE_RED else baseColor.copy(alpha = 0.35f),
-                        modifier = Modifier.size(24.dp),
+                    LikeBadge(
+                        isLiked = track.isLiked,
+                        likeCount = track.likeCount,
+                        baseColor = baseColor,
                     )
                 }
                 IconButton(onClick = onOpenSettings) {
@@ -182,6 +184,142 @@ fun PlayerHeader(
             }
         }
     }
+}
+
+/**
+ * 为红心数角标预留的右侧空间。角标不参与排版（见 [LikeBadge]），
+ * 它伸出图标框的那截落在这段留白和设置按钮的触摸边距里，
+ * 保证「2252W」这类最宽的写法也压不到齿轮图标。
+ *
+ * **已收藏时也照样留**：否则收藏那一刻红心会往右跳一下，
+ * 标题区的跑马灯宽度也跟着变。
+ */
+private val LIKE_COUNT_RESERVE = 10.dp
+
+/** 未收藏态心形与数字的颜色。两者同色，照网易云的做法——数字是心形的一部分。 */
+private const val LIKE_IDLE_ALPHA = 0.7f
+
+/**
+ * 描边心形在 24dp 图标框里的绘制尺寸。
+ *
+ * 资源 `ic_like_outline` 是切图按 96px 宽降采样出来的，宽高比 96:93，
+ * 四周各留了 1.82% 的透明余量（防止抗锯齿边缘被裁掉）。
+ */
+private val LIKE_OUTLINE_WIDTH = 22.dp
+private val LIKE_OUTLINE_HEIGHT = 21.3.dp
+
+/**
+ * 心形笔画在资源图里的实际范围（占整张图的比例）。
+ * 数字按网易云截图量出的比例对齐**笔画**而不是图片边缘。
+ */
+private const val OUTLINE_GLYPH_INSET = 0.0182f
+private const val OUTLINE_GLYPH_SPAN = 0.9636f
+
+/**
+ * 收藏态图标。
+ *
+ * - **未收藏**：手绘风描边心，右上瓣**故意断开**一截，红心数就嵌在那个缺口里
+ *   （`1.2K` / `23.1W`，见 [formatLikeCount]）。造型来自 UI 切图，
+ *   数字位置照网易云播放页量出来的比例：左缘在心宽 0.84 处、
+ *   数字顶边比心形顶边略高 5%、字高约为心高的 0.3。
+ * - **已收藏**：实心红心，**不显示数字**——此时数字不再是「要不要收藏」
+ *   的参考，留着只会和红心抢视线。
+ *
+ * 描边心用位图而不是矢量：切图是单笔手绘的，粗细有变化、起落笔是圆头，
+ * 手写 path 去逼近只会失真。96px 宽降采样后只有 2KB。
+ *
+ * 角标用 `layout` 摆成零尺寸，**不撑大图标的排版框**：数字位数随歌变化，
+ * 若参与排版，每次切歌红心都会左右挪一点。需要的空间由
+ * [LIKE_COUNT_RESERVE] 固定留出。
+ */
+@Composable
+private fun LikeBadge(
+    isLiked: Boolean,
+    likeCount: Long?,
+    baseColor: Color,
+) {
+    val idleColor = baseColor.copy(alpha = LIKE_IDLE_ALPHA)
+    Box(
+        modifier = Modifier
+            .padding(end = LIKE_COUNT_RESERVE)
+            .size(24.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (isLiked) {
+            Icon(
+                imageVector = Icons.Filled.Favorite,
+                contentDescription = "已收藏",
+                // 收藏红在任何背景下都要保持红色——它是状态指示而非装饰，
+                // 跟着 onDark 变白会让「已收藏」和「未收藏」失去区分。
+                tint = LIKE_RED,
+                modifier = Modifier.size(24.dp),
+            )
+            return@Box
+        }
+
+        Box(modifier = Modifier.size(LIKE_OUTLINE_WIDTH, LIKE_OUTLINE_HEIGHT)) {
+            Icon(
+                painter = painterResource(R.drawable.ic_like_outline),
+                contentDescription = "未收藏",
+                tint = idleColor,
+                modifier = Modifier.matchParentSize(),
+            )
+            if (likeCount != null) {
+                LikeCountLabel(text = formatLikeCount(likeCount), color = idleColor)
+            }
+        }
+    }
+}
+
+/**
+ * 嵌在心形缺口里的红心数。
+ *
+ * 竖向按**字顶**对齐而不是按文本框：文本框上方还有字体自带的留白，
+ * 那块高度随字体而变，按框对齐就对不准心形顶边。数字和 `K`/`W`
+ * 都是大写高度，所以用「首基线 − 大写高度」作为字顶。
+ */
+/** 字号取到让字高约为心高 0.3（网易云截图的比例），真机量过。 */
+private val LIKE_COUNT_FONT = 8.sp
+
+@Composable
+private fun LikeCountLabel(text: String, color: Color) {
+    Text(
+        text = text,
+        color = color,
+        fontSize = LIKE_COUNT_FONT,
+        // 显式给行高：LocalTextStyle 默认 24sp 的行高会把文本框撑成一大块
+        lineHeight = 12.sp,
+        // 网易云那组数字笔画很实（笔宽约为字高的 1/4），Medium 偏细
+        fontWeight = FontWeight.SemiBold,
+        maxLines = 1,
+        softWrap = false,
+        modifier = Modifier.layout { measurable, constraints ->
+            val placeable = measurable.measure(
+                constraints.copy(minWidth = 0, maxWidth = Constraints.Infinity)
+            )
+            val boxW = constraints.maxWidth
+            val boxH = constraints.maxHeight
+            val glyphLeft = boxW * OUTLINE_GLYPH_INSET
+            val glyphTop = boxH * OUTLINE_GLYPH_INSET
+            val glyphW = boxW * OUTLINE_GLYPH_SPAN
+            val glyphH = boxH * OUTLINE_GLYPH_SPAN
+
+            val baseline = placeable[FirstBaseline]
+            // 数字字高约 0.77em：One UI 系统字体上真机截图量出来的（10sp 量得 23px @3.0x）。
+            // 别的字体会差一两个像素，对一个角标可以接受
+            val capHeight = LIKE_COUNT_FONT.toPx() * 0.77f
+            val capTopInBox = baseline - capHeight
+
+            // 0.82 而非量出来的 0.84：数字自带一两个像素的左侧留白（side bearing），
+            // 这样笔画实际落在 0.84
+            val x = glyphLeft + glyphW * 0.82f
+            val y = glyphTop - glyphH * 0.05f - capTopInBox
+            // 零尺寸占位，不影响心形的排版框
+            layout(0, 0) {
+                placeable.place(x.roundToInt(), y.roundToInt())
+            }
+        },
+    )
 }
 
 /** 跑马灯每秒滚过的距离。慢到能读清，又不至于长标题绕一圈要等太久。 */

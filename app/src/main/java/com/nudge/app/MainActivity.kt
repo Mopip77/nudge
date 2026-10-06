@@ -29,6 +29,7 @@ import com.nudge.app.lyrics.LyricsRepository
 import com.nudge.app.lyrics.LyricsState
 import com.nudge.app.media.ActionResult
 import com.nudge.app.media.ArtworkCache
+import com.nudge.app.media.LikeCountFetcher
 import com.nudge.app.media.MediaControlRepository
 import com.nudge.app.media.TrackInfo
 import com.nudge.app.overlay.OverlayBubbleService
@@ -81,11 +82,15 @@ private const val POST_ACTION_REFRESH_DELAY_MS = 250L
 private const val DOUBLE_BACK_WINDOW_MS = 2000L
 
 /**
- * 把 [previous] 里已经拉到的高清封面接到这个新读出来的曲目上（同一首歌才接）。
+ * 把 [previous] 里已经异步拉到的字段（高清封面、红心数）接到这个新读出来的
+ * 曲目上（同一首歌才接）。
  *
  * **每一处用 `repository.currentTrack()` 的结果覆写 `track` 的地方都必须走这里。**
- * 那个方法读的是 MediaSession，只认识 363 的那张，`hiResArtwork` 恒为 null；
- * 直接赋值就会把异步拉到的高清图抹掉。
+ * 那个方法读的是 MediaSession，只认识 363 的那张，`hiResArtwork` 与
+ * `likeCount` 恒为 null；直接赋值就会把异步拉到的值抹掉。
+ *
+ * 以后再加「另拉的字段」也接在这里，别另写一个同类函数——
+ * 刷新点要逐个记得链式调用两个，漏一处就是下面那类 bug。
  *
  * 抹掉之后**不会自愈**：轮询那段同样按「同一首歌就保留」的口径接力，
  * 于是接力的是 null，而拉取 effect 的 key 是 mediaId、不会重跑——
@@ -95,10 +100,14 @@ private const val DOUBLE_BACK_WINDOW_MS = 2000L
  * 于是「按一下暂停，封面就糊了」。抽成函数而不是复制第二遍判断，
  * 就是为了让「又多一个刷新点」时不必重新想一遍这件事。
  */
-private fun TrackInfo?.keepHiResFrom(previous: TrackInfo?): TrackInfo? =
-    this?.copy(
-        hiResArtwork = previous?.takeIf { it.mediaId == mediaId }?.hiResArtwork
+private fun TrackInfo?.keepFetchedFrom(previous: TrackInfo?): TrackInfo? {
+    if (this == null) return null
+    val same = previous?.takeIf { it.mediaId == mediaId }
+    return copy(
+        hiResArtwork = same?.hiResArtwork,
+        likeCount = same?.likeCount,
     )
+}
 
 class MainActivity : ComponentActivity() {
 
@@ -192,7 +201,7 @@ class MainActivity : ComponentActivity() {
                     }
                     val current = withContext(Dispatchers.IO) { repository.currentTrack() }
                     hasPermission = permission
-                    track = current.keepHiResFrom(track)
+                    track = current.keepFetchedFrom(track)
                     canDrawOverlay = OverlayPermissions.canDrawOverlay(this@MainActivity)
                     canReadUsage = OverlayPermissions.canReadUsageStats(this@MainActivity)
                     delay(1000)
@@ -274,6 +283,20 @@ class MainActivity : ComponentActivity() {
                 // effect 的取消不保证能在 track 被改之前生效，故再比一次。
                 if (track?.mediaId == mediaId) {
                     track = track?.copy(hiResArtwork = hiRes.bitmap)
+                }
+            }
+
+            // 红心数。两种显示模式都要（顶栏共用），所以不像封面那样看 albumMode。
+            //
+            // 每首歌只拉一次，失败不重试：它只是装饰信息，拉不到就不显示角标，
+            // 不值得为它做重试或缓存。收藏之后也不重拉——已收藏态本来就不显示数字。
+            LaunchedEffect(mediaId) {
+                if (mediaId.isNullOrBlank()) return@LaunchedEffect
+                val count = withContext(Dispatchers.IO) { LikeCountFetcher.fetch(mediaId) }
+                    ?: return@LaunchedEffect
+                // 同上：拉完期间可能已经切歌
+                if (track?.mediaId == mediaId) {
+                    track = track?.copy(likeCount = count)
                 }
             }
 
@@ -537,7 +560,7 @@ class MainActivity : ComponentActivity() {
                                     delay(POST_ACTION_REFRESH_DELAY_MS)
                                     val refreshed = repository.currentTrack()
                                     withContext(Dispatchers.Main) {
-                                        track = refreshed.keepHiResFrom(track)
+                                        track = refreshed.keepFetchedFrom(track)
                                     }
                                 }
                             },

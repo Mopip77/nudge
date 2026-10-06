@@ -19,6 +19,14 @@ data class TrackInfo(
      * 立即显示，否则切歌瞬间封面会空一下。渲染侧取 `hiResArtwork ?: artwork`。
      */
     val hiResArtwork: Bitmap? = null,
+    /**
+     * 网易云的红心数（收藏人数），见 [LikeCountFetcher]。
+     * 未拉到、拉取失败、非网易云播放器时为 null，此时不显示角标。
+     *
+     * 与 [hiResArtwork] 一样是异步另拉的，轮询重建时要靠 `MainActivity`
+     * 的 `keepFetchedFrom` 接力，否则每秒被抹掉一次。
+     */
+    val likeCount: Long? = null,
     /** 总时长，毫秒。未知为 0。 */
     val durationMs: Long = 0,
     /** 播放头位置，毫秒。它是 [positionUpdateTimeMs] 那一刻的快照，不可直接显示。 */

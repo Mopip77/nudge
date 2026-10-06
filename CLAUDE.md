@@ -35,6 +35,8 @@ MediaControlRepository ──► NotificationListenerService → MediaSessionMan
 ArtworkCache ──► ArtworkFetcher ──► 网易云 song/detail (高清封面, 绕开 MediaSession)
                       ▲── CoverAspect (裁切比例) ◄── CoverOverride ◄── CoverLabScreen (debug)
 
+LikeCountFetcher ──► 网易云 song/red/count (红心数, 顶栏角标)
+
 LockWallpaperService ──► BackdropBaker ──► WallpaperManager.setBitmap(FLAG_LOCK)
         │                     ▲── BackdropGeometry (与 AlbumBackdrop 共用几何)
         ├── WritePolicy   (去抖 / 熄屏攒住 / 同图不写)
@@ -746,6 +748,22 @@ aspect 定死，`FillBounds` 会把方图**压成** 4:5，那才是真变形。
 比例存在 `ui/CoverOverride.kt`，**只存内存不落盘**，理由同另两个实验室。
 **复用同一个 LAB 角标**，不新增——角标要回答的是「现在跑的是不是实验室
 参数」，这个问题对三者是同一个。
+
+## 红心数角标
+
+顶栏的收藏图标照网易云播放页做：**未收藏**是一颗右上瓣断开的手绘描边心，
+红心数嵌在缺口里；**已收藏**是实心红心、不显示数字。
+
+- 数字来自 `song/red/count?songId=`（`media/LikeCount.kt`），按 mediaId 精确查。
+  **只取 `count`，不用 `countDesc`**：后者粒度太粗，162 万与 2252 万都报「100w+」。
+  格式化走 `formatLikeCount`（K / W，小数截断不四舍五入），`LikeCountTest` 覆盖。
+- 描边心是**位图**（`drawable-nodpi/ic_like_outline.png`，切图降采样到 96px）。
+  单笔手绘、粗细有变化，手写 path 逼近只会失真。
+- 数字位置按网易云截图量出的比例摆：左缘在心宽 0.84、字顶比心顶高约 5%、
+  字高约为心高 0.3。改字号或位置后要**真机截图量这三个比例**，别凭肉眼——
+  One UI 系统字体的数字字高是 0.77em，按字体规格估的 0.62 会让字大出两成。
+- 角标零尺寸排版，伸出图标框的部分靠 `LIKE_COUNT_RESERVE` 留白兜住，
+  最宽的「2804W」离齿轮图标还有 7px。已收藏时留白照样保留，否则红心会跳。
 
 ## 暂停态靠封面表达，不靠文字
 
@@ -1868,7 +1886,7 @@ adb shell dumpsys media_session | ag -u -o 'description=[^,]*|state=(PLAYING|PAU
 JAVA_HOME=/opt/homebrew/opt/openjdk@17 ./gradlew test
 ```
 
-284 个单元测试，主体在 `GestureRecognizer`——正例（七种手势 × 三档灵敏度）、边界（阈值临界、滑动死区）、负例（斜滑、两指反向、单指滑动、三指降级、指数不符、超时）。**动手势逻辑必须补相应测试**，尤其是防误触的负例。
+292 个单元测试，主体在 `GestureRecognizer`——正例（七种手势 × 三档灵敏度）、边界（阈值临界、滑动死区）、负例（斜滑、两指反向、单指滑动、三指降级、指数不符、超时）。**动手势逻辑必须补相应测试**，尤其是防误触的负例。
 
 预设部分由 `ProfileCodecTest` 覆盖 round-trip 与宽容解码，`ProfileSlotTest` 覆盖槽位号解析。
 
