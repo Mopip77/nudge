@@ -756,7 +756,8 @@ aspect 定死，`FillBounds` 会把方图**压成** 4:5，那才是真变形。
 
 - 数字来自 `song/red/count?songId=`（`media/LikeCount.kt`），按 mediaId 精确查。
   **只取 `count`，不用 `countDesc`**：后者粒度太粗，162 万与 2252 万都报「100w+」。
-  格式化走 `formatLikeCount`（K / W，小数截断不四舍五入），`LikeCountTest` 覆盖。
+  格式化走 `formatLikeCount`：换成 K / W 后**只留整数、向下取整**（`60.2W` → `60W`），
+  不出现小数点。`LikeCountTest` 覆盖。
 - 描边心是**位图**（`drawable-nodpi/ic_like_outline.png`，切图降采样到 96px）。
   单笔手绘、粗细有变化，手写 path 逼近只会失真。
 - 数字位置按网易云截图量出的比例摆：左缘在心宽 0.84、字顶比心顶高约 5%、
@@ -1886,7 +1887,7 @@ adb shell dumpsys media_session | ag -u -o 'description=[^,]*|state=(PLAYING|PAU
 JAVA_HOME=/opt/homebrew/opt/openjdk@17 ./gradlew test
 ```
 
-292 个单元测试，主体在 `GestureRecognizer`——正例（七种手势 × 三档灵敏度）、边界（阈值临界、滑动死区）、负例（斜滑、两指反向、单指滑动、三指降级、指数不符、超时）。**动手势逻辑必须补相应测试**，尤其是防误触的负例。
+291 个单元测试，主体在 `GestureRecognizer`——正例（七种手势 × 三档灵敏度）、边界（阈值临界、滑动死区）、负例（斜滑、两指反向、单指滑动、三指降级、指数不符、超时）。**动手势逻辑必须补相应测试**，尤其是防误触的负例。
 
 预设部分由 `ProfileCodecTest` 覆盖 round-trip 与宽容解码，`ProfileSlotTest` 覆盖槽位号解析。
 

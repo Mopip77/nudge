@@ -54,22 +54,16 @@ object LikeCountFetcher {
  * 红心数的紧凑写法：千用 `K`、万用 `W`。
  *
  * - `< 1000` 原样：`999`
- * - `< 1万` 用 K，一位小数：`1.2K`、`9.9K`
- * - `< 100万` 用 W，一位小数：`1.2W`、`23.1W`
- * - 再往上只留整数：`162W`、`2252W`——小数位在这个量级已经没有信息量，
- *   却会让角标宽出一截去挤设置按钮
+ * - `< 1万` 用 K：`1K`、`9K`
+ * - 再往上用 W：`1W`、`60W`、`2252W`
  *
- * 小数**截断而非四舍五入**：9999 四舍五入是「10.0K」，既越过了 K 的区间
- * 又比真实值大；截断成「9.9K」才不会报出一个还没达到的数。
- * 小数位为 0 时省略（`10W` 而非 `10.0W`）。
+ * 一旦换成 K / W 就**只留整数、向下取整**，不出现小数点（`60.2W` 显示成 `60W`）。
+ * 角标是瞄一眼的量级信息，小数位不增加辨识度，只会让角标变宽去挤设置按钮。
+ * 向下取整而非四舍五入：9999 四舍五入是「10K」，既越过了 K 的区间
+ * 又比真实值大；取整成「9K」才不会报出一个还没达到的数。
  */
-fun formatLikeCount(count: Long): String {
-    if (count < 1_000) return count.coerceAtLeast(0).toString()
-    val (unit, suffix) = if (count < 10_000) 1_000L to "K" else 10_000L to "W"
-    val tenths = count * 10 / unit
-    return if (tenths < 1_000 && tenths % 10 != 0L) {
-        "${tenths / 10}.${tenths % 10}$suffix"
-    } else {
-        "${count / unit}$suffix"
-    }
+fun formatLikeCount(count: Long): String = when {
+    count < 1_000 -> count.coerceAtLeast(0).toString()
+    count < 10_000 -> "${count / 1_000}K"
+    else -> "${count / 10_000}W"
 }
