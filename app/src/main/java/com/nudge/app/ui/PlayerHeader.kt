@@ -254,18 +254,20 @@ private fun LikeBadge(
                 tint = LIKE_RED,
                 modifier = Modifier.size(24.dp),
             )
-            return@Box
-        }
-
-        Box(modifier = Modifier.size(LIKE_OUTLINE_WIDTH, LIKE_OUTLINE_HEIGHT)) {
-            Icon(
-                painter = painterResource(R.drawable.ic_like_outline),
-                contentDescription = "未收藏",
-                tint = idleColor,
-                modifier = Modifier.matchParentSize(),
-            )
-            if (likeCount != null) {
-                LikeCountLabel(text = formatLikeCount(likeCount), color = idleColor)
+        } else {
+            // 必须用 if/else 而非 `return@Box`：Box 是 inline composable，
+            // 从里面提前 return 会在 isLiked 切换的那次重组里让 group 栈失衡，
+            // 真机表现为一点红心就崩（Stack.pop: Index -1 out of bounds）。
+            Box(modifier = Modifier.size(LIKE_OUTLINE_WIDTH, LIKE_OUTLINE_HEIGHT)) {
+                Icon(
+                    painter = painterResource(R.drawable.ic_like_outline),
+                    contentDescription = "未收藏",
+                    tint = idleColor,
+                    modifier = Modifier.matchParentSize(),
+                )
+                if (likeCount != null) {
+                    LikeCountLabel(text = formatLikeCount(likeCount), color = idleColor)
+                }
             }
         }
     }
